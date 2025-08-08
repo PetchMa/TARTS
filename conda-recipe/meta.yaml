@@ -8,7 +8,7 @@ package:
 
 source:
   url: https://github.com/PetchMa/TARTS/archive/refs/tags/v{{ version }}.tar.gz
-  sha256: 3ee4f31305a6eb2f3bd6ebd1a50d48815fc490da3c1ef5b4ba22106019bf3175
+  sha256: 772c480dc74012968d258481e4188f0bd0761a6079e8a781cbb830e34e5c6da1
 
 build:
   noarch: python
@@ -39,6 +39,7 @@ test:
   imports:
     - TARTS
   commands:
+    - python -c "import TARTS; print('Package imported successfully')"
     - python -c "from TARTS import NeuralActiveOpticsSys; print('Core package imported successfully')"
 
 about:
