@@ -1,12 +1,13 @@
 {% set name = "tarts" %}
-{% set version = "0.1.0" %}  # adjust to match your version
+{% set version = "0.0.0" %}  # Update this to your current version
 
 package:
   name: {{ name|lower }}
   version: {{ version }}
 
 source:
-  path: ../TARTS  # this points to your local code directory
+  url: https://github.com/PetchMa/TARTS/archive/refs/tags/v{{ version }}.tar.gz
+  sha256: 99efa821d49d5997ad0956b9a15ddf2caa89cc1fdcf2fbcb27a9dd15f67c5e56
 
 build:
   noarch: python
@@ -18,13 +19,10 @@ requirements:
     - pip
   run:
     - python >=3.8
-    - numpy        # example runtime deps
-    - scipy
+    # add runtime dependencies here, e.g., numpy, etc.
 
 about:
-  home: https://github.com/yourname/tarts  # or leave blank if private
+  home: https://github.com/PetchMa/TARTS
   license: MIT
-  license_file: ../TARTS/LICENSE
-  summary: "Transformer-based Aggregator for Residual Telescopes"
-
-
+  license_file: LICENSE
+  summary: "I like tarts"
