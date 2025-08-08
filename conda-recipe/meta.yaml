@@ -1,5 +1,5 @@
 {% set name = "tarts" %}
-{% set version = "0.0.0a2" %}  # Update this to your current version
+{% set version = "0.0.0a3" %}  # Update this to your current version
 {% set python_min = "3.8" %}
 
 package:
