@@ -10,12 +10,32 @@ from torch import vmap
 import pytorch_lightning as pl
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch.nn.functional as F_loss
-from lsst.obs.lsst import LsstCam
-from lsst.obs.lsst.cameraTransforms import LsstCameraTransforms
 import torchvision.transforms.functional as F
-from lsst.ip.isr import AssembleCcdTask
-from lsst.meas.algorithms import subtractBackground
 import copy
+
+# Optional LSST imports
+try:
+    from lsst.obs.lsst import LsstCam
+    from lsst.obs.lsst.cameraTransforms import LsstCameraTransforms
+    from lsst.ip.isr import AssembleCcdTask
+    from lsst.meas.algorithms import subtractBackground
+    LSST_AVAILABLE = True
+except ImportError:
+    LSST_AVAILABLE = False
+    # Create dummy classes for when LSST is not available
+    class LsstCam:
+        def getCamera(self):
+            raise NotImplementedError("LSST dependencies not available")
+    
+    class LsstCameraTransforms:
+        def __init__(self, camera):
+            raise NotImplementedError("LSST dependencies not available")
+    
+    class AssembleCcdTask:
+        pass
+    
+    def subtractBackground():
+        raise NotImplementedError("LSST dependencies not available")
 
 
 class NeuralActiveOpticsSys(pl.LightningModule):
@@ -451,6 +471,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         4. Computes field coordinates for all detected donuts
         5. Runs forward pass to predict Zernike coefficients
         """
+        if not LSST_AVAILABLE:
+            raise NotImplementedError("LSST dependencies not available. This method requires LSST installation.")
+        
         camera = LsstCam().getCamera()
         assembleCcdTask = AssembleCcdTask()
         new = assembleCcdTask.assembleCcd(exposure)
@@ -529,6 +552,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         4. Computes field coordinates for all detected donuts
         5. Runs forward pass to predict Zernike coefficients
         """
+        if not LSST_AVAILABLE:
+            raise NotImplementedError("LSST dependencies not available. This method requires LSST installation.")
+        
         camera = LsstCam().getCamera()
         assembleCcdTask = AssembleCcdTask()
         new = assembleCcdTask.assembleCcd(exposure)

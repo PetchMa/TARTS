@@ -3,7 +3,7 @@
 import torch
 from torch import nn
 from torchvision import models as cnn_models
-from NeuralAOS.KERNEL import CUTOUT as DONUT
+from .KERNEL import CUTOUT as DONUT
 import torch.nn.functional as F_
 
 # Global cache for Gaussian kernels

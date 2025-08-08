@@ -1,4 +1,4 @@
-"""Neural Active Optics System (NeuralAOS) package.
+"""Neural Active Optics System (TARTS) package.
 
 This package implements a deep learning-based active optics system for the LSST telescope.
 It provides neural network models for processing out-of-focus donut images to predict
@@ -11,6 +11,6 @@ The package includes:
 - AggregatorNet: For combining predictions from multiple donuts
 - Utilities for data processing, model training, and deployment
 """
-from NeuralAOS.NeuralActiveOpticsSys import *  # noqa: F403, F401
-from NeuralAOS.utils import *  # noqa: F403, F401
-from NeuralAOS.dataloader import *  # noqa: F403, F401
+from .NeuralActiveOpticsSys import *  # noqa: F403, F401
+from .utils import *  # noqa: F403, F401
+from .dataloader import *  # noqa: F403, F401

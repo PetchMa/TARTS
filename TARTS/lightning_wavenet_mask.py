@@ -10,9 +10,9 @@ from torch.utils.data import DataLoader
 from .dataloader import Donuts, Donuts_Fullframe
 from .utils import convert_zernikes_deploy
 from .wavenet import WaveNet
-from NeuralAOS.KERNEL import CUTOUT as DONUT
+from .KERNEL import CUTOUT as DONUT
 import torch.nn as nn
-from NeuralAOS.unet_mask import UNetMask
+from .unet_mask import UNetMask
 
 
 class DynamicDonutKernel(nn.Module):

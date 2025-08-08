@@ -10,7 +10,7 @@ import pytorch_lightning as pl
 import torch.nn.functional as F_loss
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from typing import Tuple
-from NeuralAOS.utils import convert_zernikes_deploy
+from .utils import convert_zernikes_deploy
 
 
 class AggregatorNet(pl.LightningModule):

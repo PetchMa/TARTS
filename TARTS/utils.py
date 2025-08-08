@@ -2,27 +2,53 @@
 import os
 from pathlib import Path
 from random import randint
-import git
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from astropy.io import fits
-from lsst.daf.butler import Butler
-from lsst.ip.isr import AssembleCcdTask
-from lsst.meas.algorithms import subtractBackground
-from lsst.ts.imsim.imsim_cmpt import ImsimCmpt
 from torch import nn
 # from lsst.summit.utils import ConsDbClient
 
-from NeuralAOS.KERNEL import CUTOUT as DONUT
+from .KERNEL import CUTOUT as DONUT
 
 import pytorch_lightning as pl
 from torch.ao.quantization.qconfig import default_qat_qconfig
 from typing import Optional
 import yaml
 import warnings
+
+# Optional imports
+try:
+    import git
+    GIT_AVAILABLE = True
+except ImportError:
+    GIT_AVAILABLE = False
+    git = None
+
+# Optional LSST imports
+try:
+    from lsst.daf.butler import Butler
+    from lsst.ip.isr import AssembleCcdTask
+    from lsst.meas.algorithms import subtractBackground
+    from lsst.ts.imsim.imsim_cmpt import ImsimCmpt
+    LSST_AVAILABLE = True
+except ImportError:
+    LSST_AVAILABLE = False
+    # Create dummy classes for when LSST is not available
+    class Butler:
+        def __init__(self, *args, **kwargs):
+            raise NotImplementedError("LSST dependencies not available")
+    
+    class AssembleCcdTask:
+        pass
+    
+    def subtractBackground():
+        raise NotImplementedError("LSST dependencies not available")
+    
+    class ImsimCmpt:
+        pass
 
 
 def safe_yaml_load(file_path: str):
@@ -430,14 +456,16 @@ def transform_inputs(
 
 
 def get_root() -> Path:
-    """Return the absolute path of the git root directory.
+    """Get the root directory of the git repository.
 
     Returns
     -------
     pathlib.PosixPath
     """
+    if not GIT_AVAILABLE:
+        # If git is not available, return current working directory
+        return Path.cwd()
     root = Path(git.Repo(".", search_parent_directories=True).working_tree_dir)
-
     return root
 
 
@@ -623,9 +651,13 @@ def filepath_to_numpy(filename, opd_filename, field='2',
         If return_data=True, also includes raw exposure data.
         If return_angle=True, also includes rotation angle.
     """
+    if not LSST_AVAILABLE:
+        raise ImportError("LSST dependencies not available. This function requires LSST installation.")
+    
     with fits.open(filename) as hdulist:
         # Extract data and header from the primary HDU
         header = hdulist[0].header
+    
     butler = Butler(repo_path, collections=["LSSTCam/raw/all", "LSSTCam/calib"], writeable=True)
     try:
         seqnum = ''
@@ -691,9 +723,18 @@ def filepath_to_numpy(filename, opd_filename, field='2',
             rotation_angle = row['RTP'].tolist()[0]  # degrees
             rotation_angle = np.radians(rotation_angle)
             return image, header, zk_true, data, rotation_angle
-        return image, header, zk_true, data
+        else:
+            return image, header, zk_true, data
     else:
-        return image, header, zk_true
+        if return_angle:
+            print(header['SEQNUM'])
+            df = pd.read_csv("../dataset.txt", sep=r'\s+')
+            row = df[df["SEQID"] == int(header['SEQNUM'])]
+            rotation_angle = row['RTP'].tolist()[0]  # degrees
+            rotation_angle = np.radians(rotation_angle)
+            return image, header, zk_true, rotation_angle
+        else:
+            return image, header, zk_true
 
 
 def batched_crop(image_tensor: torch.Tensor, centers: torch.Tensor, crop_size: int) -> torch.Tensor:
@@ -1020,6 +1061,9 @@ def getzk(row):
 
 def getRealData(butler, cdb_table, ind):
     """Get real data from source."""
+    if not LSST_AVAILABLE:
+        raise ImportError("LSST dependencies not available. This function requires LSST installation.")
+    
     exposure_id = cdb_table['visit_id'][ind]
     detector_name = cdb_table['detector'][ind]
     data_id1 = {
