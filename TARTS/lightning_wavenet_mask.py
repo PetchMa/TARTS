@@ -1,6 +1,6 @@
 """Wrapping everything for WaveNet in Pytorch Lightning."""
 
-from typing import Any
+from typing import Any, Tuple
 
 import pytorch_lightning as pl
 import torch
@@ -359,7 +359,7 @@ class WaveNetSystem(pl.LightningModule):
 
     def predict_step(
         self, batch: dict, batch_idx: int
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and return with truth."""
         # unpack data from the dictionary
         img = batch["image"]
@@ -597,7 +597,7 @@ class WaveNetSystem(pl.LightningModule):
         """
         return self.donut_kernel.get_mask()
     
-    def process_image_with_donut_kernel(self, img: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def process_image_with_donut_kernel(self, img: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Process an image with the donut kernel and return both before and after.
         

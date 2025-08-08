@@ -1,6 +1,6 @@
 """Wrapping everything for WaveNet in Pytorch Lightning."""
 
-from typing import Any
+from typing import Any, Tuple
 
 import pytorch_lightning as pl
 import torch
@@ -179,7 +179,7 @@ class WaveNetSystem(pl.LightningModule):
 
     def predict_step(
         self, batch: dict, batch_idx: int
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and return with truth."""
         # unpack data from the dictionary
         img = batch["image"]

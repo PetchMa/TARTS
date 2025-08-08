@@ -5,10 +5,9 @@
 package:
   name: {{ name|lower }}
   version: {{ version }}
-
+# 
 source:
-  url: https://github.com/PetchMa/TARTS/archive/refs/tags/v{{ version }}.tar.gz
-  sha256: 789b7899faffa1b8c2550477a5a0a7d810161f342f62c397d186f4f18946fdb2
+  path: ..
 
 build:
   noarch: python

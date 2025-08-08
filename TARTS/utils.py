@@ -15,7 +15,7 @@ from .KERNEL import CUTOUT as DONUT
 
 import pytorch_lightning as pl
 from torch.ao.quantization.qconfig import default_qat_qconfig
-from typing import Optional
+from typing import Optional, Tuple
 import yaml
 import warnings
 
@@ -484,7 +484,7 @@ def noise_est(frame):
         frame (torch.Tensor): The input frame as a PyTorch tensor.
 
     Returns:
-        tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing:
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing:
             - The estimated noise standard deviation (torch.Tensor).
             - The estimated noise mean (torch.Tensor).
             - The index of the corner with the lowest standard deviation (torch.Tensor).
