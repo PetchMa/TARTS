@@ -1,0 +1,30 @@
+{% set name = "tarts" %}
+{% set version = "0.1.0" %}  # adjust to match your version
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  path: ../TARTS  # this points to your local code directory
+
+build:
+  noarch: python
+  script: "{{ PYTHON }} -m pip install . --no-deps -vv"
+
+requirements:
+  host:
+    - python >=3.8
+    - pip
+  run:
+    - python >=3.8
+    - numpy        # example runtime deps
+    - scipy
+
+about:
+  home: https://github.com/yourname/tarts  # or leave blank if private
+  license: MIT
+  license_file: ../TARTS/LICENSE
+  summary: "Transformer-based Aggregator for Residual Telescopes"
+
+
