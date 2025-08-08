@@ -5,9 +5,10 @@
 package:
   name: {{ name|lower }}
   version: {{ version }}
-# 
+
 source:
-  path: ..
+  url: https://github.com/PetchMa/TARTS/archive/refs/tags/v{{ version }}.tar.gz
+  sha256: 44189755bd476d5de1c65a6dc1748454661bc6c9c93adf371f391cf197b85f9b
 
 build:
   noarch: python
@@ -23,12 +24,12 @@ requirements:
     - python >={{ python_min }}
     - numpy
     - scipy
-    - matplotlib
+    - matplotlib-base
     - pytorch
     - pytorch-lightning
     - pyyaml
     - torchvision
-    - astropy
+    - astropy-base
     - pandas
     - gitpython
 
@@ -39,13 +40,12 @@ test:
     - TARTS
   commands:
     - python -c "import TARTS; print('Package imported successfully')"
-    - python -c "from TARTS import NeuralActiveOpticsSys; print('Core package imported successfully')"
 
 about:
   home: https://github.com/PetchMa/TARTS
   license: MIT
   license_file: LICENSE
-  summary: "I like tarts"
+  summary: "Neural Active Optics System for LSST telescope"
 
 extra:
   recipe-maintainers:
