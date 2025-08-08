@@ -8,7 +8,7 @@ package:
 
 source:
   url: https://github.com/PetchMa/TARTS/archive/refs/tags/v{{ version }}.tar.gz
-  sha256: 772c480dc74012968d258481e4188f0bd0761a6079e8a781cbb830e34e5c6da1
+  sha256: 789b7899faffa1b8c2550477a5a0a7d810161f342f62c397d186f4f18946fdb2
 
 build:
   noarch: python
