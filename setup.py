@@ -9,7 +9,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="TARTS",
-    version="0.0.0",
+    version="0.0.0a1",
     packages=find_packages(),
     install_requires=[],
     author="Peter Xiangyuan Ma",
