@@ -1,6 +1,5 @@
 {% set name = "tarts" %}
 {% set version = "0.0.0a4" %}  # Update this to your current version
-{% set python_min = "3.8" %}
 
 package:
   name: {{ name|lower }}
@@ -17,11 +16,11 @@ build:
 
 requirements:
   host:
-    - python {{ python_min }}
+    - python
     - pip
     - setuptools
   run:
-    - python >={{ python_min }}
+    - python
     - numpy
     - scipy
     - matplotlib-base
@@ -35,11 +34,13 @@ requirements:
 
 test:
   requires:
-    - python {{ python_min }}
+    - python
+    - pip
   imports:
     - TARTS
+    - TARTS.NeuralActiveOpticsSys
   commands:
-    - python -c "import TARTS; print('Package imported successfully')"
+    - pip check
 
 about:
   home: https://github.com/PetchMa/TARTS
