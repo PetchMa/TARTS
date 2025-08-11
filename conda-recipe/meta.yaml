@@ -1,5 +1,6 @@
 {% set name = "tarts" %}
-{% set version = "0.0.0a5" %}  # Update this to your current version
+{% set version = "0.0.0a6" %}  # Update this to your current version
+{% set python_min = "3.10" %}
 
 package:
   name: {{ name|lower }}
@@ -16,11 +17,11 @@ build:
 
 requirements:
   host:
-    - python
+    - python {{ python_min }}
     - pip
     - setuptools
   run:
-    - python
+    - python >={{ python_min }}
     - numpy
     - scipy
     - matplotlib-base
@@ -34,7 +35,7 @@ requirements:
 
 test:
   requires:
-    - python
+    - python {{ python_min }}
     - pip
   imports:
     - TARTS
