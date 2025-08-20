@@ -205,7 +205,7 @@ class Donuts(Dataset):
 
         # standardize all the inputs for the neural net
         if self.settings["transform"]:
-            img, fx, fy, intra, band = transform_inputs(
+            img, fx, fy, intra, band = transform_inputs(  # type: ignore
                 img,
                 fx,
                 fy,
@@ -231,8 +231,8 @@ class Donuts(Dataset):
         # record the meta data
         fx = torch.FloatTensor([fx])
         fy = torch.FloatTensor([fy])
-        intra = torch.FloatTensor([intra])
-        band = torch.FloatTensor([band])
+        intra = torch.FloatTensor([intra])  # type: ignore
+        band = torch.FloatTensor([band])  # type: ignore
         zernikes = torch.from_numpy(zernikes).float()
         dof = torch.from_numpy(dof).float()
 
@@ -319,6 +319,8 @@ class Donuts_Fullframe(Dataset):
             Path to the coral dataset directory.
         coral_mode: bool, default=False
             Whether to enable coral mode for domain adaptation.
+        mask_mode: bool, default=False
+            Whether to use mask mode for zernike extraction.
         """
         self.settings = {
             "mode": mode,
@@ -358,6 +360,7 @@ class Donuts_Fullframe(Dataset):
             self.image_files = self.image_files[: int(0.5 * len(self.image_files))]
 
         self.noll_zk = np.array(noll_zk)-4
+        self.adjustment_factor = adjustment_factor
 
     def __len__(self) -> int:
         """Return length of this Dataset."""
@@ -384,7 +387,7 @@ class Donuts_Fullframe(Dataset):
         zernikes = torch.tensor(state["zk_true"])
         # standardize all the inputs for the neural net
         if self.settings["transform"]:
-            img, fx, fy, intra, band = transform_inputs(
+            img, fx, fy, intra, band = transform_inputs(  # type: ignore
                 img,
                 fx,
                 fy,
@@ -397,8 +400,8 @@ class Donuts_Fullframe(Dataset):
         # get meta data
         fx = torch.FloatTensor([fx])
         fy = torch.FloatTensor([fy])
-        intra = torch.FloatTensor([intra])
-        band = torch.FloatTensor([band])
+        intra = torch.FloatTensor([intra])  # type: ignore
+        band = torch.FloatTensor([band])  # type: ignore
         zernikes = zernikes.float()[:, 0]
         coral_output = {
             "coral_image": img,
@@ -448,8 +451,8 @@ class Donuts_Fullframe(Dataset):
 
         if self.mask_mode:
             zernikes = torch.tensor(state["zk_true"])
-            zernikes = zernikes[:,0]
-            zernikes = zernikes[None,:]
+            zernikes = zernikes[:, 0]
+            zernikes = zernikes[None, :]
         else:
             zernikes = torch.tensor(state["zk_true"])[:, self.noll_zk]
 
@@ -458,7 +461,7 @@ class Donuts_Fullframe(Dataset):
 
         # standardize all the inputs for the neural net
         if self.settings["transform"]:
-            img, fx, fy, intra, band = transform_inputs(
+            img, fx, fy, intra, band = transform_inputs(  # type: ignore
                 img,
                 fx,
                 fy,
@@ -468,11 +471,29 @@ class Donuts_Fullframe(Dataset):
 
         # convert everything to tensors
         img = img.float()
+
+        # Apply image shifting only in train mode and when adjustment_factor > 0
+        if self.settings["mode"] == "train" and self.adjustment_factor > 0:
+            img, offset_amount = shift_offcenter(
+                img, adjust=self.adjustment_factor, return_offset=True
+            )
+            # Add offset information to output
+            offset_vec = (
+                np.array(np.array(offset_amount).astype(np.float16))
+                / self.adjustment_factor
+            )
+            offset_r = np.sqrt(offset_amount[0] ** 2 + offset_amount[1] ** 2)
+            offset_r = np.array(offset_r.astype(np.float16)) / self.adjustment_factor
+        else:
+            offset_amount = [0, 0]
+            offset_vec = np.array([0.0, 0.0])
+            offset_r = np.array(0.0)
+
         # get meta data
         fx = torch.FloatTensor([fx])
         fy = torch.FloatTensor([fy])
-        intra = torch.FloatTensor([intra])
-        band = torch.FloatTensor([band])
+        intra = torch.FloatTensor([intra])  # type: ignore
+        band = torch.FloatTensor([band])  # type: ignore
         zernikes = zernikes.float()[0, :]
 
         output = {
@@ -482,6 +503,9 @@ class Donuts_Fullframe(Dataset):
             "intrafocal": intra,
             "band": band,
             "zernikes": zernikes,
+            "offset": offset_amount,
+            "offset_vec": offset_vec,
+            "offset_r": offset_r,
         }
         if self.coral_mode:
             coral_output = self.sample_coral()

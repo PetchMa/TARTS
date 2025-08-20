@@ -9,7 +9,7 @@ import torch.nn as nn
 import pytorch_lightning as pl
 import torch.nn.functional as F_loss
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from typing import Tuple
+# from typing import Tuple  # Unused import
 from .utils import convert_zernikes_deploy
 
 
@@ -95,7 +95,7 @@ class AggregatorNet(pl.LightningModule):
         # final layer to transform to the shape of number of zernikes
         self.fc = nn.Linear(d_model, num_zernikes)
 
-    def forward(self, x: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+    def forward(self, x: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
         """Forward pass of the AggregatorNet model.
 
         Parameters
@@ -113,18 +113,18 @@ class AggregatorNet(pl.LightningModule):
 
         Notes
         -----
-        - The transformer encoder processes `x[0]`.
+        - The transformer encoder processes the first element of the tuple.
         - The last token's output is extracted and passed through a linear
             layer.
-        - The mean correction `x[1]` is added to the final output.
+        - The mean correction (second element) is added to the final output.
 
         """
-        x, mean = x
-        x = self.transformer_encoder(x)
-        x = x[:, -1, :]  # Take the last token's output
-        x = self.fc(x)  # Predict the next token
-        x += mean
-        return x
+        x_input, mean = x
+        x_tensor = self.transformer_encoder(x_input)
+        x_tensor = x_tensor[:, -1, :]  # Take the last token's output
+        x_tensor = self.fc(x_tensor)  # Predict the next token
+        x_tensor += mean
+        return x_tensor
 
     def training_step(self, batch: tuple, batch_idx: int):
         """Perform a single training step.

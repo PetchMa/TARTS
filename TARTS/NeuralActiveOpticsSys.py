@@ -1,5 +1,8 @@
 """Neural network to predict zernike coefficients from donut images and positions."""
-from .utils import batched_crop, get_centers, convert_zernikes_deploy, single_conv
+from .utils import (batched_crop, get_centers,
+                    convert_zernikes_deploy, single_conv,
+                    shift_offcenter,
+                    )
 import torch
 from torch import nn
 from .lightning_wavenet import WaveNetSystem
@@ -12,30 +15,10 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch.nn.functional as F_loss
 import torchvision.transforms.functional as F
 import copy
-
-# Optional LSST imports
-try:
-    from lsst.obs.lsst import LsstCam
-    from lsst.obs.lsst.cameraTransforms import LsstCameraTransforms
-    from lsst.ip.isr import AssembleCcdTask
-    from lsst.meas.algorithms import subtractBackground
-    LSST_AVAILABLE = True
-except ImportError:
-    LSST_AVAILABLE = False
-    # Create dummy classes for when LSST is not available
-    class LsstCam:
-        def getCamera(self):
-            raise NotImplementedError("LSST dependencies not available")
-    
-    class LsstCameraTransforms:
-        def __init__(self, camera):
-            raise NotImplementedError("LSST dependencies not available")
-    
-    class AssembleCcdTask:
-        pass
-    
-    def subtractBackground():
-        raise NotImplementedError("LSST dependencies not available")
+from lsst.obs.lsst import LsstCam
+from lsst.obs.lsst.cameraTransforms import LsstCameraTransforms
+from lsst.ip.isr import AssembleCcdTask
+from lsst.meas.algorithms import subtractBackground
 
 
 class NeuralActiveOpticsSys(pl.LightningModule):
@@ -373,6 +356,142 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         return final_zernike_prediction
 
+    def forward_shifts(
+        self,
+        image: torch.Tensor,
+        fx: torch.Tensor,
+        fy: torch.Tensor,
+        intra: torch.Tensor,
+        band: torch.Tensor,
+        shift_amount: int = 5,
+    ) -> torch.Tensor:
+        """Forward pass with random image shifts applied before WaveNet.
+
+        This method is similar to forward() but applies random shifts to cropped images
+        before passing them to WaveNet, which can help with robustness and data augmentation.
+
+        Parameters
+        ----------
+        image : torch.Tensor
+            Input donut image tensor of shape (batch_size, channels, height, width).
+        fx : torch.Tensor
+            Field x-coordinates tensor.
+        fy : torch.Tensor
+            Field y-coordinates tensor.
+        intra : torch.Tensor
+            Intra/extra-focal indicator tensor (0 for intra, 1 for extra).
+        band : torch.Tensor
+            Filter band tensor (0-5 for u,g,r,i,z,y filters).
+        shift_amount : int, default=5
+            Maximum amount of random shift to apply to cropped images.
+
+        Returns
+        -------
+        torch.Tensor
+            Predicted Zernike coefficients tensor.
+
+        Notes
+        -----
+        This method performs the same pipeline as forward() but with random shifts:
+        1. Crops donut images from full field
+        2. Iteratively refines alignment using AlignNet
+        3. Filters donuts based on SNR criteria
+        4. Applies random shifts to cropped images using shift_offcenter
+        5. Predicts Zernike coefficients using WaveNet
+        6. Aggregates predictions using AggregatorNet (if enabled)
+        """
+        centers = get_centers(image[0, 0, :, :], self.CROP_SIZE).to(self.device_val)
+        cropped_image = batched_crop(image[:, 0, :, :], centers, crop_size=self.CROP_SIZE).float()
+
+        fx, fy, intra, band = fx.clone()[0, :, :].float(), fy.clone()[0, :, :].float(), intra.clone()[0, :, :].float(), band.clone()[0, :, :].int()
+
+        pixel_shifts = self.alignnet_model(
+            cropped_image[:, 0, :, :], fx.clone(), fy.clone(), intra.clone(), band.clone()
+        ) * self.SCALE
+        centers += pixel_shifts.int()
+
+        cropped_image = batched_crop(
+            image[0, :, :, :].float(), centers, crop_size=self.CROP_SIZE
+        )
+
+        fx += pixel_shifts[:, 0][..., None].int().float() * self.deg_per_pix
+        fy += pixel_shifts[:, 1][..., None].int().float() * self.deg_per_pix
+
+        SNR = self.single_conv_batched(cropped_image[:, 0, :, :])[..., None]
+
+        keep_ind = SNR[:, 0] > self.alpha
+        self.cropped_image = copy.deepcopy(cropped_image)
+        cropped_image = cropped_image[keep_ind]
+
+        fx = fx[keep_ind]
+        fy = fy[keep_ind]
+        intra = intra[keep_ind]
+        band = band[keep_ind]
+        SNR = SNR[keep_ind]
+
+        # Apply random shifts to cropped images before WaveNet
+        shifted_images = []
+        for i in range(cropped_image.shape[0]):
+            shifted_img = shift_offcenter(cropped_image[i, 0, :, :], adjust=shift_amount, return_offset=False)
+            shifted_images.append(shifted_img)
+
+        # Stack shifted images back into a batch
+        shifted_cropped_image = torch.stack(shifted_images, dim=0)
+
+        total_zernikes = self.wavenet_model(shifted_cropped_image, fx.clone(), fy.clone(),
+                                            intra.clone(), band.clone())
+        total_zernikes = total_zernikes/1000
+        # Ensure all tensors are on the same device before concatenation
+        device = total_zernikes.device
+
+        # Move all tensors to the same device as total_zernikes
+        fx = fx.to(device)
+        fy = fy.to(device)
+        SNR = SNR.to(device)
+        self.total_zernikes = total_zernikes
+        # Match training data normalization: use local max like in dataloader
+        # Training data: snr = torch.tensor(loaded_data["snr"]).to(self.device)[..., None] / torch.tensor(loaded_data["snr"]).max()
+        # Note: Training data uses global max across all data, but we only have local data
+        # Using local max with epsilon for numerical stability
+        SNR_normalized = SNR / (SNR.max() + 1e-8)  # Add small epsilon to avoid division by zero
+
+        # Match training data position processing: concatenate field positions
+        # Training data: position = torch.concatenate([field_x, field_y], axis=-1).to(self.device)
+        position = torch.cat([fx, fy], dim=-1)
+
+        # Concatenate features in the same order as training data: [zernikes, position, snr]
+        embedded_features = torch.cat([
+            total_zernikes,
+            position,
+            SNR_normalized
+        ], dim=1)
+
+        if embedded_features.shape[0] > self.max_seq_length:
+            embedded_features = embedded_features[:self.max_seq_length, :]
+        else:
+            padding = torch.zeros((self.max_seq_length - embedded_features.shape[0],
+                                   embedded_features.shape[1])).to(self.device_val)
+            embedded_features = torch.cat([embedded_features,
+                                           padding], axis=0).to(self.device_val).float()
+
+        embedded_features = embedded_features[None, ...]
+
+        # Match training data mean computation:
+        # Training data: zk_mean1 = torch.mean(zk_pred1, dim=0) / 1000
+        # Since total_zernikes is already divided by 1000, we don't divide again
+        mean_zernike = torch.mean(total_zernikes, axis=0)
+
+        # (OPTIONAL) Check the types
+        if self.aggregator_on:
+            # Match training data: mean_zernike should NOT have convert_zernikes_deploy applied
+            # Training data stores mean directly without conversion
+            final_zernike_prediction = self.aggregatornet_model((embedded_features, mean_zernike))
+        else:
+            final_zernike_prediction = mean_zernike
+        final_zernike_prediction = self.final_layer(final_zernike_prediction)
+
+        return final_zernike_prediction
+
     def training_step(self, batch, batch_idx):
         """Perform a single training step.
 
@@ -471,9 +590,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         4. Computes field coordinates for all detected donuts
         5. Runs forward pass to predict Zernike coefficients
         """
-        if not LSST_AVAILABLE:
-            raise NotImplementedError("LSST dependencies not available. This method requires LSST installation.")
-        
         camera = LsstCam().getCamera()
         assembleCcdTask = AssembleCcdTask()
         new = assembleCcdTask.assembleCcd(exposure)
@@ -528,6 +644,89 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             pred = self.forward(image_tensor, field_x, field_y, focal_val, band_val)
         return pred
 
+    def deploy_run_shifts(self, exposure, detectorName=None, shift_amount=5):
+        """Run inference on a real LSST exposure for deployment with random image shifts.
+
+        This method is identical to deploy_run() except it uses forward_shifts() to apply
+        random shifts to the cropped images before WaveNet processing.
+
+        Parameters
+        ----------
+        exposure : lsst.afw.image.Exposure
+            LSST exposure object containing the raw donut image data.
+        detectorName : str, optional
+            Name of the detector/chip. If None, uses the CHIPID from exposure metadata.
+        shift_amount : int, default=5
+            Maximum amount of random shift to apply to cropped images.
+
+        Returns
+        -------
+        torch.Tensor
+            Predicted Zernike coefficients for the exposure.
+
+        Notes
+        -----
+        This method performs the complete inference pipeline:
+        1. Assembles CCD from raw exposure
+        2. Subtracts background
+        3. Extracts metadata (filter, focal plane position)
+        4. Computes field coordinates for all detected donuts
+        5. Runs forward_shifts pass to predict Zernike coefficients with random shifts
+        """
+        camera = LsstCam().getCamera()
+        assembleCcdTask = AssembleCcdTask()
+        new = assembleCcdTask.assembleCcd(exposure)
+        SubtractBackground = subtractBackground.SubtractBackgroundTask()
+        SubtractBackground.run(new)
+        image = new.getImage().array
+        header = exposure.metadata
+        filter_name = header['FILTER']
+        if detectorName is None:
+            detectorName = header['CHIPID']
+        #  U G R I Z Y
+        if 'u' in filter_name:
+            filter_name = torch.tensor([0])
+        elif 'g' in filter_name:
+            filter_name = torch.tensor([1])
+        elif 'r' in filter_name:
+            filter_name = torch.tensor([2])
+        elif 'i' in filter_name:
+            filter_name = torch.tensor([3])
+        elif 'z' in filter_name:
+            filter_name = torch.tensor([4])
+        elif 'y' in filter_name:
+            filter_name = torch.tensor([5])
+
+        # check if intra or extra
+        if header['CCDSLOT'][2:] == '1':
+            focal = torch.tensor([0]).float()
+        elif header['CCDSLOT'][2:] == '0':
+            focal = torch.tensor([1]).float()
+
+        centers = get_centers(image, self.CROP_SIZE)
+
+        # Cache camera transforms to avoid repeated instantiation
+        camera_transforms = LsstCameraTransforms(camera)
+
+        # Vectorized field coordinate computation
+        field_coords = []
+        for x, y in centers:
+            coord = camera_transforms.ccdPixelToFocalMm(x, y, detectorName=detectorName)
+            field_coords.append([coord[0] / self.mm_pix * self.deg_per_pix, coord[1] / self.mm_pix * self.deg_per_pix])
+
+        field_coords = torch.tensor(field_coords, dtype=torch.float32)
+        field_x = field_coords[:, 0].unsqueeze(1).to(self.device_val)[None, ...]
+        field_y = field_coords[:, 1].unsqueeze(1).to(self.device_val)[None, ...]
+
+        # Vectorized focal and band values - ensure correct shape for forward method
+        focal_val = focal.expand(centers.shape[0], 1).to(self.device_val)[None, ...]
+        band_val = filter_name.expand(centers.shape[0], 1).to(self.device_val)[None, ...]
+
+        image_tensor = F.to_tensor(image)[None, ...]
+        with torch.no_grad():
+            pred = self.forward_shifts(image_tensor, field_x, field_y, focal_val, band_val, shift_amount)
+        return pred
+
     def deploy_detect(self, exposure, detectorName=None):
         """Run inference on a real LSST exposure for deployment.
 
@@ -552,9 +751,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         4. Computes field coordinates for all detected donuts
         5. Runs forward pass to predict Zernike coefficients
         """
-        if not LSST_AVAILABLE:
-            raise NotImplementedError("LSST dependencies not available. This method requires LSST installation.")
-        
         camera = LsstCam().getCamera()
         assembleCcdTask = AssembleCcdTask()
         new = assembleCcdTask.assembleCcd(exposure)

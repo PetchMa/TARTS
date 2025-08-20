@@ -8,7 +8,7 @@ mm_pix : 0.01
 alpha: 1
 max_seq_len: 200
 butler_repo_path: 'butler'
-finetune_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain_old'
+finetune_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain'
 finetune_filepath_train: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain/train/'
 finetune_filepath_val: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain/val/'
 coral_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/coral/'

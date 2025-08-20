@@ -1,7 +1,6 @@
 """Wrapping everything for WaveNet in Pytorch Lightning."""
 
 from typing import Any, Tuple
-
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
@@ -10,7 +9,6 @@ from torch.utils.data import DataLoader
 from .dataloader import Donuts, Donuts_Fullframe
 from .utils import convert_zernikes_deploy
 from .wavenet import WaveNet
-
 
 
 class DonutLoader(pl.LightningDataModule):
@@ -190,7 +188,7 @@ class WaveNetSystem(pl.LightningModule):
         zk_true = batch["zernikes"].cuda()
         # dof_true = batch["dof"]  # noqa: F841
 
-        # predict zernikes        
+        # predict zernikes
         zk_pred = self.wavenet(img, fx, fy, intra, band)
 
         return zk_pred, zk_true

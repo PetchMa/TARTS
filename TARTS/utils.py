@@ -15,7 +15,7 @@ from .KERNEL import CUTOUT as DONUT
 
 import pytorch_lightning as pl
 from torch.ao.quantization.qconfig import default_qat_qconfig
-from typing import Optional, Tuple
+from typing import Optional
 import yaml
 import warnings
 
@@ -27,28 +27,11 @@ except ImportError:
     GIT_AVAILABLE = False
     git = None
 
-# Optional LSST imports
-try:
-    from lsst.daf.butler import Butler
-    from lsst.ip.isr import AssembleCcdTask
-    from lsst.meas.algorithms import subtractBackground
-    from lsst.ts.imsim.imsim_cmpt import ImsimCmpt
-    LSST_AVAILABLE = True
-except ImportError:
-    LSST_AVAILABLE = False
-    # Create dummy classes for when LSST is not available
-    class Butler:
-        def __init__(self, *args, **kwargs):
-            raise NotImplementedError("LSST dependencies not available")
-    
-    class AssembleCcdTask:
-        pass
-    
-    def subtractBackground():
-        raise NotImplementedError("LSST dependencies not available")
-    
-    class ImsimCmpt:
-        pass
+from lsst.daf.butler import Butler
+from lsst.ip.isr import AssembleCcdTask
+from lsst.meas.algorithms import subtractBackground
+from lsst.ts.imsim.imsim_cmpt import ImsimCmpt
+LSST_AVAILABLE = True
 
 
 def safe_yaml_load(file_path: str):
@@ -402,7 +385,7 @@ def transform_inputs(
     fy: float,
     intra: bool,
     band: int,
-) -> tuple:
+) -> tuple[np.ndarray, float, float, float, float]:
     """Transform inputs to the neural network.
 
     Parameters
@@ -445,7 +428,7 @@ def transform_inputs(
     intra = (intra - intra_mean) / intra_std  # type: ignore
 
     # get the effective wavelength in microns
-    band = BAND_MAP[band]
+    band = BAND_MAP[band]  # type: ignore
 
     # normalize the wavelength
     band_mean = 0.710
@@ -653,11 +636,11 @@ def filepath_to_numpy(filename, opd_filename, field='2',
     """
     if not LSST_AVAILABLE:
         raise ImportError("LSST dependencies not available. This function requires LSST installation.")
-    
+
     with fits.open(filename) as hdulist:
         # Extract data and header from the primary HDU
         header = hdulist[0].header
-    
+
     butler = Butler(repo_path, collections=["LSSTCam/raw/all", "LSSTCam/calib"], writeable=True)
     try:
         seqnum = ''
@@ -1063,7 +1046,7 @@ def getRealData(butler, cdb_table, ind):
     """Get real data from source."""
     if not LSST_AVAILABLE:
         raise ImportError("LSST dependencies not available. This function requires LSST installation.")
-    
+
     exposure_id = cdb_table['visit_id'][ind]
     detector_name = cdb_table['detector'][ind]
     data_id1 = {
