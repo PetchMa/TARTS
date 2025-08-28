@@ -34,6 +34,19 @@ from lsst.ts.imsim.imsim_cmpt import ImsimCmpt
 LSST_AVAILABLE = True
 
 
+
+
+MAP_DETECTOR_TO_NUMBER = {
+    'R00_SW0': 191,
+    'R00_SW1': 192,
+    'R04_SW0': 195,
+    'R04_SW1': 196,
+    'R40_SW0': 197,
+    'R40_SW1': 198,
+    'R44_SW0': 201,
+    'R44_SW1': 202,
+}
+
 def safe_yaml_load(file_path: str):
     """Safely load YAML files that may contain Python objects like tuples.
 

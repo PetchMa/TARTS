@@ -19,7 +19,7 @@ from lsst.obs.lsst import LsstCam
 from lsst.obs.lsst.cameraTransforms import LsstCameraTransforms
 from lsst.ip.isr import AssembleCcdTask
 from lsst.meas.algorithms import subtractBackground
-
+from .utils import MAP_DETECTOR_TO_NUMBER
 
 class NeuralActiveOpticsSys(pl.LightningModule):
     """Transfer learning driven WaveNet."""
@@ -295,6 +295,19 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         keep_ind = SNR[:, 0] > self.alpha
         self.cropped_image = copy.deepcopy(cropped_image)
+        
+        # Check if any donuts remain after SNR filtering
+        if keep_ind.sum() == 0:
+            # No donuts detected, return zeros for Zernike coefficients
+            # The final_layer will process the output, so we need to return the expected size
+            if self.final_layer == self.identity:
+                # If no final_layer, return 17 Zernike coefficients (WaveNet output size)
+                num_zernikes = 17
+            else:
+                # If final_layer is present, return the size it outputs
+                num_zernikes = self.final_layer[-1].out_features
+            return torch.zeros((1,num_zernikes), device=self.device_val)
+        
         cropped_image = cropped_image[keep_ind]
 
         fx = fx[keep_ind]
@@ -599,7 +612,8 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         header = exposure.metadata
         filter_name = header['FILTER']
         if detectorName is None:
-            detectorName = header['CHIPID']
+            full_detectorName = header['RAFTBAY']+'_'+ header['CCDSLOT']
+            detectorName = MAP_DETECTOR_TO_NUMBER[full_detectorName]
         #  U G R I Z Y
         if 'u' in filter_name:
             filter_name = torch.tensor([0])
