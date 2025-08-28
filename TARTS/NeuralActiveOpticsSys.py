@@ -295,7 +295,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         SNR = self.single_conv_batched(cropped_image[:, 0, :, :])[..., None]
 
         keep_ind = SNR[:, 0] > self.alpha
-        self.cropped_image = copy.deepcopy(cropped_image)
 
         # Check if any donuts remain after SNR filtering
         if keep_ind.sum() == 0:
@@ -327,6 +326,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         fy = fy.to(device)
         SNR = SNR.to(device)
         self.total_zernikes = total_zernikes
+        self.cropped_image = cropped_image[:, 0, :, :]
         # Match training data normalization: use local max like in dataloader
         # Training data: snr = torch.tensor(loaded_data["snr"]).to(self.device)[..., None] / torch.tensor(loaded_data["snr"]).max()
         # Note: Training data uses global max across all data, but we only have local data
