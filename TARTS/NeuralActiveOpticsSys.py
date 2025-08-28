@@ -19,6 +19,7 @@ from lsst.obs.lsst import LsstCam
 from lsst.obs.lsst.cameraTransforms import LsstCameraTransforms
 from lsst.ip.isr import AssembleCcdTask
 from lsst.meas.algorithms import subtractBackground
+from .utils import MAP_DETECTOR_TO_NUMBER
 
 
 class NeuralActiveOpticsSys(pl.LightningModule):
@@ -306,7 +307,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             else:
                 # If final_layer is present, return the size it outputs
                 num_zernikes = self.final_layer[-1].out_features
-            return torch.zeros(num_zernikes, device=self.device_val)
+            return torch.zeros((1, num_zernikes), device=self.device_val)
 
         cropped_image = cropped_image[keep_ind]
 
@@ -612,7 +613,8 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         header = exposure.metadata
         filter_name = header['FILTER']
         if detectorName is None:
-            detectorName = header['CHIPID']
+            full_detectorName = header['RAFTBAY'] + '_' + header['CCDSLOT']
+            detectorName = MAP_DETECTOR_TO_NUMBER[full_detectorName]
         #  U G R I Z Y
         if 'u' in filter_name:
             filter_name = torch.tensor([0])
