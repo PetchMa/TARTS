@@ -90,7 +90,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         if final_layer is not None:
             layers = [
                 nn.ReLU(),
-                nn.Linear(19, final_layer),
+                nn.Linear(17, final_layer),  # WaveNet outputs 17 Zernike coefficients
             ]
             self.final_layer = nn.Sequential(*layers)
         else:
@@ -295,6 +295,19 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         keep_ind = SNR[:, 0] > self.alpha
         self.cropped_image = copy.deepcopy(cropped_image)
+
+        # Check if any donuts remain after SNR filtering
+        if keep_ind.sum() == 0:
+            # No donuts detected, return zeros for Zernike coefficients
+            # The final_layer will process the output, so we need to return the expected size
+            if self.final_layer == self.identity:
+                # If no final_layer, return 17 Zernike coefficients (WaveNet output size)
+                num_zernikes = 17
+            else:
+                # If final_layer is present, return the size it outputs
+                num_zernikes = self.final_layer[-1].out_features
+            return torch.zeros(num_zernikes, device=self.device_val)
+
         cropped_image = cropped_image[keep_ind]
 
         fx = fx[keep_ind]
