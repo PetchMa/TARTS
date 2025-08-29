@@ -41,10 +41,10 @@ MAP_DETECTOR_TO_NUMBER = {
     'R00_SW1': 192,
     'R04_SW0': 195,
     'R04_SW1': 196,
-    'R40_SW0': 197,
-    'R40_SW1': 198,
-    'R44_SW0': 201,
-    'R44_SW1': 202,
+    'R40_SW0': 199,
+    'R40_SW1': 200,
+    'R44_SW0': 203,
+    'R44_SW1': 204,
 }
 
 def safe_yaml_load(file_path: str):
