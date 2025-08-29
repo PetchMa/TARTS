@@ -33,9 +33,6 @@ from lsst.meas.algorithms import subtractBackground
 from lsst.ts.imsim.imsim_cmpt import ImsimCmpt
 LSST_AVAILABLE = True
 
-
-
-
 MAP_DETECTOR_TO_NUMBER = {
     'R00_SW0': 191,
     'R00_SW1': 192,
@@ -46,6 +43,7 @@ MAP_DETECTOR_TO_NUMBER = {
     'R44_SW0': 203,
     'R44_SW1': 204,
 }
+
 
 def safe_yaml_load(file_path: str):
     """Safely load YAML files that may contain Python objects like tuples.
