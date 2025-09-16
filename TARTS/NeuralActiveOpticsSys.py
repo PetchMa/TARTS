@@ -306,6 +306,12 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             else:
                 # If final_layer is present, return the size it outputs
                 num_zernikes = self.final_layer[-1].out_features
+            self.fx = [torch.nan]
+            self.fy = [torch.nan]
+            self.intra = [torch.nan]
+            self.band = [torch.nan]
+            self.SNR = [torch.nan]
+            self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
             self.cropped_image = torch.zeros((1, self.CROP_SIZE, self.CROP_SIZE), device=self.device_val)
             self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
             return torch.zeros((1, num_zernikes), device=self.device_val)
@@ -327,6 +333,11 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         fx = fx.to(device)
         fy = fy.to(device)
         SNR = SNR.to(device)
+        self.fx = fx
+        self.fy = fy
+        self.intra = intra
+        self.band = band
+        self.SNR = SNR
         self.total_zernikes = total_zernikes
         self.cropped_image = cropped_image[:, 0, :, :]
         # Match training data normalization: use local max like in dataloader
