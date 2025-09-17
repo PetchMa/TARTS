@@ -3,11 +3,9 @@ import os
 from pathlib import Path
 from random import randint
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
-from astropy.io import fits
 from torch import nn
 # from lsst.summit.utils import ConsDbClient
 
@@ -27,10 +25,6 @@ except ImportError:
     GIT_AVAILABLE = False
     git = None
 
-from lsst.daf.butler import Butler
-from lsst.ip.isr import AssembleCcdTask
-from lsst.meas.algorithms import subtractBackground
-from lsst.ts.imsim.imsim_cmpt import ImsimCmpt
 LSST_AVAILABLE = True
 
 MAP_DETECTOR_TO_NUMBER = {
@@ -613,122 +607,6 @@ def shift_offcenter(frame, adjust=0, return_offset=True):
         return backplate[160:160*2, 160:160*2], [random_x, random_y]
     else:
         return backplate[160:160*2, 160:160*2]
-
-
-def filepath_to_numpy(filename, opd_filename, field='2',
-                      repo_path='../temp', return_data=False,
-                      return_angle=False,
-                      noll_indices=None):
-    """Convert FITS file to numpy array with associated metadata and Zernike coefficients.
-
-    Parameters
-    ----------
-    filename : str
-        Path to the FITS file containing the exposure data.
-    opd_filename : str
-        Path to the OPD (Optical Path Difference) file containing Zernike truth data.
-    field : str, optional, default='2'
-        Field identifier for the exposure.
-    repo_path : str, optional, default='../temp'
-        Path to the Butler repository for data access.
-    return_data : bool, optional, default=False
-        Whether to return the raw exposure data along with processed arrays.
-    return_angle : bool, optional, default=False
-        Whether to return rotation angle information from dataset file.
-    noll_indices : array-like, optional
-        Specific Noll indices to extract from Zernike coefficients.
-
-    Returns
-    -------
-    tuple
-        Contains processed image array, header information, and true Zernike coefficients.
-        If return_data=True, also includes raw exposure data.
-        If return_angle=True, also includes rotation angle.
-    """
-    if not LSST_AVAILABLE:
-        raise ImportError("LSST dependencies not available. This function requires LSST installation.")
-
-    with fits.open(filename) as hdulist:
-        # Extract data and header from the primary HDU
-        header = hdulist[0].header
-
-    butler = Butler(repo_path, collections=["LSSTCam/raw/all", "LSSTCam/calib"], writeable=True)
-    try:
-        seqnum = ''
-        for i in range(4-len(str(header['SEQNUM']))):
-            seqnum += '0'
-        seqnum += str(header['SEQNUM'])
-        exposure_id = header['DAYOBS'] + '0' + str(seqnum)
-        exposure_id = exposure_id[1:]
-        exposure_id = field + exposure_id
-
-        detector = int(header['OUTFILE'].split('-')[-1].split('.')[0].replace('det', ''))
-
-        data_id = {
-            "instrument": "LSSTCam",  # Replace with your instrument
-            "exposure": int(exposure_id),  # Replace with your exposure ID
-            "detector": detector
-        }
-        print(data_id)
-        data = butler.get('raw', dataId=data_id, collections="LSSTCam/raw/all")
-    except Exception:
-        os.system(f'butler ingest-raws {repo_path} {filename} > /dev/null 2>&1')
-
-        seqnum = ''
-        for i in range(4-len(str(header['SEQNUM']))):
-            seqnum += '0'
-        seqnum += str(header['SEQNUM'])
-        exposure_id = header['DAYOBS'] + '0' + str(seqnum)
-        exposure_id = exposure_id[1:]
-        exposure_id = field + exposure_id
-
-        detector = int(header['OUTFILE'].split('-')[-1].split('.')[0].replace('det', ''))
-
-        data_id = {
-            "instrument": "LSSTCam",  # Replace with your instrument
-            "exposure": int(exposure_id),  # Replace with your exposure ID
-            "detector": detector
-        }
-        data = butler.get('raw', dataId=data_id, collections="LSSTCam/raw/all")
-
-    assembleCcdTask = AssembleCcdTask()
-    new = assembleCcdTask.assembleCcd(data)
-    SubtractBackground = subtractBackground.SubtractBackgroundTask()
-    SubtractBackground.run(new)
-    image = new.getImage().array
-
-    obj = ImsimCmpt(25)
-    obj.opd_file_path = opd_filename
-    print(opd_filename)
-    opd_data = obj._map_opd_to_zk(0, 4)
-
-    true_zk = {}
-    for sensor_id, opd_zk in zip([191, 195, 199, 203], opd_data):
-        true_zk[sensor_id] = opd_zk[:25]
-
-    detector = detector - int(header['CCDSLOT'].replace('SW', ''))
-    zk_true = torch.tensor(np.array([true_zk[detector]]))/1000
-
-    if return_data:
-        if return_angle:
-            print(header['SEQNUM'])
-            df = pd.read_csv("../dataset.txt", sep=r'\s+')
-            row = df[df["SEQID"] == int(header['SEQNUM'])]
-            rotation_angle = row['RTP'].tolist()[0]  # degrees
-            rotation_angle = np.radians(rotation_angle)
-            return image, header, zk_true, data, rotation_angle
-        else:
-            return image, header, zk_true, data
-    else:
-        if return_angle:
-            print(header['SEQNUM'])
-            df = pd.read_csv("../dataset.txt", sep=r'\s+')
-            row = df[df["SEQID"] == int(header['SEQNUM'])]
-            rotation_angle = row['RTP'].tolist()[0]  # degrees
-            rotation_angle = np.radians(rotation_angle)
-            return image, header, zk_true, rotation_angle
-        else:
-            return image, header, zk_true
 
 
 def batched_crop(image_tensor: torch.Tensor, centers: torch.Tensor, crop_size: int) -> torch.Tensor:
