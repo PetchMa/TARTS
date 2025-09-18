@@ -3,6 +3,8 @@ from .utils import (batched_crop, get_centers,
                     convert_zernikes_deploy, single_conv,
                     shift_offcenter,
                     )
+import os
+import logging
 import torch
 from torch import nn
 from .lightning_wavenet import WaveNetSystem
@@ -63,6 +65,8 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         """
         super(NeuralActiveOpticsSys, self).__init__()
         self.save_hyperparameters()
+        # must start with lsst. for capture by Rubin logging system
+        self.log = logging.getLogger("lsst.tarts.NeuralActiveOpticsSys")
         self.device_val = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Load OOD detection model if path is provided
@@ -83,10 +87,11 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             print("   Continuing without OOD detection...")
 
         # Load parameters from YAML file once
-        with open(dataset_params, 'r') as yaml_file:
+        with open(os.path.expandvars(dataset_params), 'r') as yaml_file:
             params = yaml.safe_load(yaml_file)
 
         if wavenet_path is None:
+            self.log.warning("No WaveNet path provided, initializing new model.")
             self.wavenet_model = WaveNetSystem(pretrained=pretrained).to(self.device_val)
         else:
             # Always use checkpoint loading - the pretrained parameter doesn't matter when loading from checkpoint
@@ -96,6 +101,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             ).to(self.device_val)
 
         if alignet_path is None:
+            self.log.warning("No AlignNet path provided, initializing new model.")
             self.alignnet_model = AlignNetSystem(pretrained=pretrained).to(self.device_val)
         else:
             try:
@@ -106,6 +112,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 ).to(self.device_val)
                 print("✅ Loaded AlignNet regular checkpoint")
             except Exception:
+                self.log.warning("Failed to load AlignNet despite file being provided!")
                 print("⚠️  Regular AlignNet loading failed")
                 print("🔄 Trying to load AlignNet as QAT-trained model...")
                 from training.load_qat_model import load_qat_trained_model
@@ -116,6 +123,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         self.aggregator_on = aggregator_on
         print(self.device_val)
         if aggregatornet_path is None:
+            self.log.warning("No AggregatorNet path provided, initializing new model.")
             d_model = params["aggregator_model"]["d_model"]
             nhead = params["aggregator_model"]["nhead"]
             num_layers = params["aggregator_model"]["num_layers"]
