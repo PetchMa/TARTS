@@ -618,10 +618,16 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         5. Runs forward pass to predict Zernike coefficients
         """
         camera = LsstCam().getCamera()
-        assembleCcdTask = AssembleCcdTask()
-        new = assembleCcdTask.assembleCcd(exposure)
-        SubtractBackground = subtractBackground.SubtractBackgroundTask()
-        SubtractBackground.run(new)
+        try:
+            assembleCcdTask = AssembleCcdTask()
+            new = assembleCcdTask.assembleCcd(exposure)
+            SubtractBackground = subtractBackground.SubtractBackgroundTask()
+            SubtractBackground.run(new)
+        except Exception as e:
+            print("Warning: switching to no CCD assembly: ", str(e))
+            new = exposure
+            SubtractBackground = subtractBackground.SubtractBackgroundTask()
+            SubtractBackground.run(new)
         image = new.getImage().array
         header = exposure.metadata
         filter_name = header['FILTER']
