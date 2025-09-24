@@ -311,6 +311,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             self.intra = [torch.nan]
             self.band = [torch.nan]
             self.SNR = [torch.nan]
+            self.centers = [torch.nan]
             self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
             self.cropped_image = torch.zeros((1, self.CROP_SIZE, self.CROP_SIZE), device=self.device_val)
             self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
@@ -333,6 +334,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         fx = fx.to(device)
         fy = fy.to(device)
         SNR = SNR.to(device)
+        self.centers = centers[keep_ind]
         self.fx = fx
         self.fy = fy
         self.intra = intra
