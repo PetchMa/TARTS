@@ -46,8 +46,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         aggregator_on : bool, optional
             Whether to use aggregator network for final prediction. Defaults to True.
         pretrained : bool, optional
-            Whether to use pre-trained CNN weights. Set to False for deployment mode
-            to avoid downloading weights. Defaults to True.
+            Whether to use pre-trained CNN weights when creating new models (when checkpoint paths are None).
+            Set to False for deployment mode to avoid downloading weights. Defaults to True.
+            Note: This parameter is ignored when loading from checkpoint files.
         """
         super(NeuralActiveOpticsSys, self).__init__()
         self.save_hyperparameters()

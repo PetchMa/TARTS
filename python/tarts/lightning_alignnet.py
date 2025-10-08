@@ -82,7 +82,7 @@ class AlignNetSystem(pl.LightningModule):
         lr: float = 1e-3,
         lr_schedule: bool = False,
         device='cuda',
-        pretrained: bool = True,
+        pretrained: bool = False,
     ) -> None:
         """Initialize the AlignNet model.
 
@@ -117,8 +117,8 @@ class AlignNetSystem(pl.LightningModule):
         device : str, optional, default='cuda'
             The device to use for computation ('cuda' or 'cpu').
 
-        pretrained : bool, optional, default=True
-            Whether to use pre-trained CNN weights. Set to False to avoid downloading weights.
+        pretrained : bool, optional, default=False
+            Whether to use pre-trained CNN weights. Set to True to download pre-trained weights.
 
         """
         super().__init__()
