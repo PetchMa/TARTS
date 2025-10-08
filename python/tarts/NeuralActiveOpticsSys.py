@@ -60,39 +60,21 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         if wavenet_path is None:
             self.wavenet_model = WaveNetSystem(pretrained=pretrained).to(self.device_val)
         else:
-            # Create model with pretrained=False first to avoid downloads, then load checkpoint
-            if not pretrained:
-                # Create temporary model with pretrained=False to avoid downloads
-                temp_model = WaveNetSystem(pretrained=False)
-                # Load checkpoint into the temp model
-                checkpoint = torch.load(wavenet_path, map_location=str(self.device_val))
-                temp_model.load_state_dict(checkpoint['state_dict'], strict=False)
-                self.wavenet_model = temp_model.to(self.device_val)
-            else:
-                # Use normal checkpoint loading when pretrained=True is desired
-                self.wavenet_model = WaveNetSystem.load_from_checkpoint(
-                    wavenet_path,
-                    map_location=str(self.device_val)
-                ).to(self.device_val)
+            # Always use checkpoint loading - the pretrained parameter doesn't matter when loading from checkpoint
+            self.wavenet_model = WaveNetSystem.load_from_checkpoint(
+                wavenet_path,
+                map_location=str(self.device_val)
+            ).to(self.device_val)
 
         if alignet_path is None:
             self.alignnet_model = AlignNetSystem(pretrained=pretrained).to(self.device_val)
         else:
             try:
-                # Create model with pretrained=False first to avoid downloads, then load checkpoint
-                if not pretrained:
-                    # Create temporary model with pretrained=False to avoid downloads
-                    temp_model = AlignNetSystem(pretrained=False)
-                    # Load checkpoint into the temp model
-                    checkpoint = torch.load(alignet_path, map_location=str(self.device_val))
-                    temp_model.load_state_dict(checkpoint['state_dict'], strict=False)
-                    self.alignnet_model = temp_model.to(self.device_val)
-                else:
-                    # Use normal checkpoint loading when pretrained=True is desired
-                    self.alignnet_model = AlignNetSystem.load_from_checkpoint(
-                        alignet_path,
-                        map_location=str(self.device_val)
-                    ).to(self.device_val)
+                # Always use checkpoint loading - the pretrained parameter doesn't matter when loading from checkpoint
+                self.alignnet_model = AlignNetSystem.load_from_checkpoint(
+                    alignet_path,
+                    map_location=str(self.device_val)
+                ).to(self.device_val)
                 print("✅ Loaded AlignNet regular checkpoint")
             except Exception:
                 print("⚠️  Regular AlignNet loading failed")
