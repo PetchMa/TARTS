@@ -81,7 +81,8 @@ class AlignNetSystem(pl.LightningModule):
         alpha: float = 0,
         lr: float = 1e-3,
         lr_schedule: bool = False,
-        device='cuda'
+        device='cuda',
+        pretrained: bool = True,
     ) -> None:
         """Initialize the AlignNet model.
 
@@ -116,13 +117,17 @@ class AlignNetSystem(pl.LightningModule):
         device : str, optional, default='cuda'
             The device to use for computation ('cuda' or 'cpu').
 
+        pretrained : bool, optional, default=True
+            Whether to use pre-trained CNN weights. Set to False to avoid downloading weights.
+
         """
         super().__init__()
         self.save_hyperparameters()
         self.alignnet = AlignNet(
             cnn_model=cnn_model,
             n_predictor_layers=n_predictor_layers,
-            device=device
+            device=device,
+            pretrained=pretrained
         )
 
         # define some parameters that will be accessed by

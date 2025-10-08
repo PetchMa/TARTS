@@ -26,7 +26,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
     """Transfer learning driven WaveNet."""
     def __init__(self, dataset_params, wavenet_path=None, alignet_path=None,
                  aggregatornet_path=None,
-                 lr=1e-3, final_layer=None, aggregator_on=True) -> None:
+                 lr=1e-3, final_layer=None, aggregator_on=True, pretrained=True) -> None:
         """Initialize the Neural Active Optics System.
 
         Parameters
@@ -45,6 +45,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             Size of additional final linear layer. If None, uses identity function.
         aggregator_on : bool, optional
             Whether to use aggregator network for final prediction. Defaults to True.
+        pretrained : bool, optional
+            Whether to use pre-trained CNN weights. Set to False for deployment mode
+            to avoid downloading weights. Defaults to True.
         """
         super(NeuralActiveOpticsSys, self).__init__()
         self.save_hyperparameters()
@@ -55,12 +58,12 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             params = yaml.safe_load(yaml_file)
 
         if wavenet_path is None:
-            self.wavenet_model = WaveNetSystem().to(self.device_val)
+            self.wavenet_model = WaveNetSystem(pretrained=pretrained).to(self.device_val)
         else:
             self.wavenet_model = WaveNetSystem.load_from_checkpoint(wavenet_path).to(self.device_val)
 
         if alignet_path is None:
-            self.alignnet_model = AlignNetSystem().to(self.device_val)
+            self.alignnet_model = AlignNetSystem(pretrained=pretrained).to(self.device_val)
         else:
             try:
                 self.alignnet_model = AlignNetSystem.load_from_checkpoint(alignet_path).to(self.device_val)

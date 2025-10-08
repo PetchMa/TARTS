@@ -143,6 +143,7 @@ class WaveNetSystem(pl.LightningModule):
         alpha: float = 0,
         lr: float = 1e-3,
         lr_schedule: bool = False,
+        pretrained: bool = True,
     ) -> None:
         """Create the WaveNet.
 
@@ -161,12 +162,15 @@ class WaveNetSystem(pl.LightningModule):
             The initial learning rate for Adam.
         lr_schedule: bool, default=True
             Whether to use the ReduceLROnPlateau learning rate scheduler.
+        pretrained: bool, default=True
+            Whether to use pre-trained CNN weights. Set to False to avoid downloading weights.
         """
         super().__init__()
         self.save_hyperparameters()
         self.wavenet = WaveNet(
             cnn_model=cnn_model,
             n_predictor_layers=n_predictor_layers,
+            pretrained=pretrained,
         )
 
         # define some parameters that will be accessed by

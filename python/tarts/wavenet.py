@@ -98,6 +98,7 @@ class WaveNet(nn.Module):
         freeze_cnn: bool = False,
         n_predictor_layers: tuple = (256,),
         device='cuda',
+        pretrained: bool = True,
     ) -> None:
         """Create the WaveNet.
 
@@ -112,11 +113,14 @@ class WaveNet(nn.Module):
             This does not include the output layer, which is fixed to 19.
         device: str, default='cuda'
             Device to run the model on ('cuda' or 'cpu').
+        pretrained: bool, default=True
+            Whether to use pre-trained CNN weights. Set to False to avoid downloading weights.
         """
         super().__init__()
 
         # load the CNN
-        self.cnn = getattr(cnn_models, cnn_model)(weights="DEFAULT")
+        weights_param = "DEFAULT" if pretrained else None
+        self.cnn = getattr(cnn_models, cnn_model)(weights=weights_param)
 
         # save the number of cnn features
         self.n_cnn_features = self.cnn.fc.in_features

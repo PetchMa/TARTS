@@ -41,7 +41,8 @@ class AlignNet(nn.Module):
         cnn_model: str = "resnet34",
         freeze_cnn: bool = False,
         n_predictor_layers: tuple = (256,),
-        device='cuda'
+        device='cuda',
+        pretrained: bool = True
     ) -> None:
         """Initialize the NeuralAlignment model.
 
@@ -59,6 +60,8 @@ class AlignNet(nn.Module):
             The output layer is fixed to have 2 nodes.
         device : str, optional, default='cuda'
             The device to use for computations ('cuda' or 'cpu').
+        pretrained : bool, optional, default=True
+            Whether to use pre-trained CNN weights. Set to False to avoid downloading weights.
 
         Notes
         -----
@@ -74,7 +77,8 @@ class AlignNet(nn.Module):
         super().__init__()
         self.device_val = device
         # load the CNN
-        self.cnn = getattr(cnn_models, cnn_model)(weights="DEFAULT").to('cpu')
+        weights_param = "DEFAULT" if pretrained else None
+        self.cnn = getattr(cnn_models, cnn_model)(weights=weights_param).to('cpu')
 
         # save the number of cnn features
         self.n_cnn_features = self.cnn.fc.in_features
