@@ -53,6 +53,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         compile_models : bool, optional
             Whether to apply torch.compile to the submodels (WaveNet, AlignNet, AggregatorNet).
             This can significantly speed up inference but may increase compilation time on first run.
+            Automatically selects backend: "inductor" for CPU, default for GPU.
             Defaults to False.
         """
         super(NeuralActiveOpticsSys, self).__init__()
@@ -124,22 +125,29 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         # Apply torch.compile to submodels if requested
         if compile_models:
-            print("🔧 Compiling submodels with torch.compile...")
+            # Determine compilation backend based on device
+            if self.device_val.type == 'cpu':
+                compile_backend = "inductor"
+                print("🔧 Compiling submodels with torch.compile (CPU backend: inductor)...")
+            else:
+                compile_backend = None  # Use default backend for GPU
+                print("🔧 Compiling submodels with torch.compile (GPU backend: default)...")
+
             try:
-                self.wavenet_model = torch.compile(self.wavenet_model)
-                print("✅ WaveNet compiled")
+                self.wavenet_model = torch.compile(self.wavenet_model, backend=compile_backend)
+                print(f"✅ WaveNet compiled with backend: {compile_backend or 'default'}")
             except Exception as e:
                 print(f"⚠️  WaveNet compilation failed: {e}")
 
             try:
-                self.alignnet_model = torch.compile(self.alignnet_model)
-                print("✅ AlignNet compiled")
+                self.alignnet_model = torch.compile(self.alignnet_model, backend=compile_backend)
+                print(f"✅ AlignNet compiled with backend: {compile_backend or 'default'}")
             except Exception as e:
                 print(f"⚠️  AlignNet compilation failed: {e}")
 
             try:
-                self.aggregatornet_model = torch.compile(self.aggregatornet_model)
-                print("✅ AggregatorNet compiled")
+                self.aggregatornet_model = torch.compile(self.aggregatornet_model, backend=compile_backend)
+                print(f"✅ AggregatorNet compiled with backend: {compile_backend or 'default'}")
             except Exception as e:
                 print(f"⚠️  AggregatorNet compilation failed: {e}")
 
@@ -152,23 +160,31 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         This method can be called after model initialization to enable compilation.
         Useful for deployment scenarios where you want to optimize inference speed.
+        Automatically selects the appropriate backend based on the device (CPU: inductor, GPU: default).
         """
-        print("🔧 Compiling submodels with torch.compile...")
+        # Determine compilation backend based on device
+        if self.device_val.type == 'cpu':
+            compile_backend = "inductor"
+            print("🔧 Compiling submodels with torch.compile (CPU backend: inductor)...")
+        else:
+            compile_backend = None  # Use default backend for GPU
+            print("🔧 Compiling submodels with torch.compile (GPU backend: default)...")
+
         try:
-            self.wavenet_model = torch.compile(self.wavenet_model)
-            print("✅ WaveNet compiled")
+            self.wavenet_model = torch.compile(self.wavenet_model, backend=compile_backend)
+            print(f"✅ WaveNet compiled with backend: {compile_backend or 'default'}")
         except Exception as e:
             print(f"⚠️  WaveNet compilation failed: {e}")
 
         try:
-            self.alignnet_model = torch.compile(self.alignnet_model)
-            print("✅ AlignNet compiled")
+            self.alignnet_model = torch.compile(self.alignnet_model, backend=compile_backend)
+            print(f"✅ AlignNet compiled with backend: {compile_backend or 'default'}")
         except Exception as e:
             print(f"⚠️  AlignNet compilation failed: {e}")
 
         try:
-            self.aggregatornet_model = torch.compile(self.aggregatornet_model)
-            print("✅ AggregatorNet compiled")
+            self.aggregatornet_model = torch.compile(self.aggregatornet_model, backend=compile_backend)
+            print(f"✅ AggregatorNet compiled with backend: {compile_backend or 'default'}")
         except Exception as e:
             print(f"⚠️  AggregatorNet compilation failed: {e}")
 
