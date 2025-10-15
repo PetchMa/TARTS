@@ -26,7 +26,8 @@ class NeuralActiveOpticsSys(pl.LightningModule):
     """Transfer learning driven WaveNet."""
     def __init__(self, dataset_params, wavenet_path=None, alignet_path=None,
                  aggregatornet_path=None,
-                 lr=1e-3, final_layer=None, aggregator_on=True, pretrained=True) -> None:
+                 lr=1e-3, final_layer=None, aggregator_on=True, pretrained=True,
+                 compile_models=False) -> None:
         """Initialize the Neural Active Optics System.
 
         Parameters
@@ -49,6 +50,10 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             Whether to use pre-trained CNN weights when creating new models (when checkpoint paths are None).
             Set to False for deployment mode to avoid downloading weights. Defaults to True.
             Note: This parameter is ignored when loading from checkpoint files.
+        compile_models : bool, optional
+            Whether to apply torch.compile to the submodels (WaveNet, AlignNet, AggregatorNet).
+            This can significantly speed up inference but may increase compilation time on first run.
+            Defaults to False.
         """
         super(NeuralActiveOpticsSys, self).__init__()
         self.save_hyperparameters()
@@ -116,6 +121,58 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         self.deg_per_pix = params['deg_per_pix']
         self.alpha = params['alpha']
         self.SCALE = params['adjustment_AlignNet']
+
+        # Apply torch.compile to submodels if requested
+        if compile_models:
+            print("🔧 Compiling submodels with torch.compile...")
+            try:
+                self.wavenet_model = torch.compile(self.wavenet_model)
+                print("✅ WaveNet compiled")
+            except Exception as e:
+                print(f"⚠️  WaveNet compilation failed: {e}")
+
+            try:
+                self.alignnet_model = torch.compile(self.alignnet_model)
+                print("✅ AlignNet compiled")
+            except Exception as e:
+                print(f"⚠️  AlignNet compilation failed: {e}")
+
+            try:
+                self.aggregatornet_model = torch.compile(self.aggregatornet_model)
+                print("✅ AggregatorNet compiled")
+            except Exception as e:
+                print(f"⚠️  AggregatorNet compilation failed: {e}")
+
+            print("🎉 Model compilation completed!")
+        else:
+            print("ℹ️  Model compilation disabled (compile_models=False)")
+
+    def compile_submodels(self):
+        """Apply torch.compile to all submodels for faster inference.
+
+        This method can be called after model initialization to enable compilation.
+        Useful for deployment scenarios where you want to optimize inference speed.
+        """
+        print("🔧 Compiling submodels with torch.compile...")
+        try:
+            self.wavenet_model = torch.compile(self.wavenet_model)
+            print("✅ WaveNet compiled")
+        except Exception as e:
+            print(f"⚠️  WaveNet compilation failed: {e}")
+
+        try:
+            self.alignnet_model = torch.compile(self.alignnet_model)
+            print("✅ AlignNet compiled")
+        except Exception as e:
+            print(f"⚠️  AlignNet compilation failed: {e}")
+
+        try:
+            self.aggregatornet_model = torch.compile(self.aggregatornet_model)
+            print("✅ AggregatorNet compiled")
+        except Exception as e:
+            print(f"⚠️  AggregatorNet compilation failed: {e}")
+
+        print("🎉 Model compilation completed!")
 
     def identity(self, x):
         """Return the input unchanged (identity function).
