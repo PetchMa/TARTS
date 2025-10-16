@@ -190,6 +190,46 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         print("🎉 Model compilation completed!")
 
+    def get_internal_data(self):
+        """Retrieve all internal data as a list of dictionaries.
+
+        Each dictionary contains the data for one donut/crop:
+        - cropped_image: The cropped image tensor
+        - fx: Field x position
+        - fy: Field y position
+        - intra: Intra-focal measurement
+        - band: Band information
+        - SNR: Signal-to-noise ratio
+        - centers: Center coordinates
+        - zernikes: Estimated Zernike coefficients
+
+        Returns:
+        --------
+        list of dict
+            List of dictionaries, each containing the data for one donut.
+            Returns empty list if no data is available.
+        """
+        internal_data = []
+
+        # Check if we have valid data (not NaN-filled)
+        if hasattr(self, 'fx') and len(self.fx) > 0 and not torch.isnan(self.fx[0]):
+            num_donuts = len(self.fx)
+
+            for i in range(num_donuts):
+                data_dict = {
+                    'cropped_image': self.cropped_image[i].clone().detach(),
+                    'fx': self.fx[i].clone().detach(),
+                    'fy': self.fy[i].clone().detach(),
+                    'intra': self.intra[i].clone().detach(),
+                    'band': self.band[i].clone().detach(),
+                    'SNR': self.SNR[i].clone().detach(),
+                    'centers': self.centers[i].clone().detach(),
+                    'zernikes': self.total_zernikes[i].clone().detach()
+                }
+                internal_data.append(data_dict)
+
+        return internal_data
+
     def identity(self, x):
         """Return the input unchanged (identity function).
 
