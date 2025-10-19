@@ -431,12 +431,12 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             else:
                 # If final_layer is present, return the size it outputs
                 num_zernikes = self.final_layer[-1].out_features
-            self.fx = [torch.nan]
-            self.fy = [torch.nan]
-            self.intra = [torch.nan]
-            self.band = [torch.nan]
-            self.SNR = [torch.nan]
-            self.centers = [torch.nan]
+            self.fx = [torch.tensor(0)]
+            self.fy = [torch.tensor(0)]
+            self.intra = [torch.tensor(0)]
+            self.band = [torch.tensor(0)]
+            self.SNR = [torch.tensor(0)]
+            self.centers = [torch.tensor([0, 0])]
             self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
             self.cropped_image = torch.zeros((1, self.CROP_SIZE, self.CROP_SIZE), device=self.device_val)
             self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
