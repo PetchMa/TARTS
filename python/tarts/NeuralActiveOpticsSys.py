@@ -15,6 +15,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch.nn.functional as F_loss
 import torchvision.transforms.functional as F
 import copy
+import os
+import joblib
 from lsst.obs.lsst import LsstCam
 from lsst.obs.lsst.cameraTransforms import LsstCameraTransforms
 from lsst.ip.isr import AssembleCcdTask
@@ -27,7 +29,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
     def __init__(self, dataset_params, wavenet_path=None, alignet_path=None,
                  aggregatornet_path=None,
                  lr=1e-3, final_layer=None, aggregator_on=True, pretrained=True,
-                 compile_models=False) -> None:
+                 compile_models=False, ood_model_path=None) -> None:
         """Initialize the Neural Active Optics System.
 
         Parameters
@@ -55,10 +57,30 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             This can significantly speed up inference but may increase compilation time on first run.
             Automatically selects backend: "inductor" for CPU, default for GPU.
             Defaults to False.
+        ood_model_path : str, optional
+            Path to OOD detection model (joblib file). If provided, OOD detection will be performed
+            during inference and scores will be stored in internal metadata. Defaults to None.
         """
         super(NeuralActiveOpticsSys, self).__init__()
         self.save_hyperparameters()
         self.device_val = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Load OOD detection model if path is provided
+        self.ood_model = None
+        self.ood_mean = None
+        if ood_model_path is not None and os.path.exists(ood_model_path):
+            try:
+                print(f"Loading OOD detection model from {ood_model_path}...")
+                ood_data = joblib.load(ood_model_path)
+                self.ood_model = ood_data['cov_model']
+                self.ood_mean = torch.tensor(ood_data['mean'], device=self.device_val, dtype=torch.float32)
+                print("✅ OOD detection model loaded successfully")
+            except Exception as e:
+                print(f"⚠️  Failed to load OOD model: {e}")
+                print("   Continuing without OOD detection...")
+        elif ood_model_path is not None:
+            print(f"⚠️  OOD model path provided but file not found: {ood_model_path}")
+            print("   Continuing without OOD detection...")
 
         # Load parameters from YAML file once
         with open(dataset_params, 'r') as yaml_file:
@@ -202,6 +224,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         - SNR: Signal-to-noise ratio
         - centers: Center coordinates
         - zernikes: Estimated Zernike coefficients
+        - ood_score: Out-of-distribution score (if OOD detection is enabled)
 
         Returns:
         --------
@@ -226,6 +249,12 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                     'centers': self.centers[i].clone().detach(),
                     'zernikes': self.total_zernikes[i].clone().detach()
                 }
+                # Add OOD score if available
+                if hasattr(self, 'ood_scores') and self.ood_scores is not None and i < len(self.ood_scores):
+                    data_dict['ood_score'] = self.ood_scores[i].clone().detach()
+                else:
+                    data_dict['ood_score'] = None
+
                 internal_data.append(data_dict)
 
         return internal_data
@@ -440,6 +469,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
             self.cropped_image = torch.zeros((1, self.CROP_SIZE, self.CROP_SIZE), device=self.device_val)
             self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
+            self.ood_scores = None
             return torch.zeros((1, num_zernikes), device=self.device_val)
 
         cropped_image = cropped_image[keep_ind]
@@ -452,6 +482,27 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         total_zernikes = self.wavenet_model(cropped_image[:, 0, :, :], fx.clone(), fy.clone(),
                                             intra.clone(), band.clone())
         total_zernikes = total_zernikes/1000
+
+        # Compute OOD scores if OOD model is available
+        ood_scores = None
+        if self.ood_model is not None and hasattr(self.wavenet_model.wavenet, 'predictor_features'):
+            try:
+                # Get predictor penultimate features (already on CPU from WaveNet forward pass)
+                penultimate = self.wavenet_model.wavenet.predictor_features  # Shape: (batch_size, n_features)
+
+                # Convert to numpy and compute Mahalanobis distance
+                features_np = penultimate.numpy()  # Already on CPU
+                if self.ood_mean is not None:
+                    features_centered = features_np - self.ood_mean.cpu().numpy()
+                    mahalanobis_dist = self.ood_model.mahalanobis(features_centered)
+                    # Store as tensor
+                    ood_scores = torch.tensor(mahalanobis_dist, device=self.device_val, dtype=torch.float32)
+                else:
+                    ood_scores = None
+            except Exception as e:
+                print(f"⚠️  OOD detection failed: {e}")
+                ood_scores = None
+
         # Ensure all tensors are on the same device before concatenation
         device = total_zernikes.device
 
@@ -467,6 +518,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         self.SNR = SNR
         self.total_zernikes = total_zernikes
         self.cropped_image = cropped_image[:, 0, :, :]
+        self.ood_scores = ood_scores
         # Match training data normalization: use local max like in dataloader
         # Training data: snr = torch.tensor(loaded_data["snr"]).to(self.device)[..., None] / torch.tensor(loaded_data["snr"]).max()
         # Note: Training data uses global max across all data, but we only have local data
@@ -595,6 +647,28 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         total_zernikes = self.wavenet_model(shifted_cropped_image, fx.clone(), fy.clone(),
                                             intra.clone(), band.clone())
         total_zernikes = total_zernikes/1000
+
+        # Compute OOD scores if OOD model is available
+        ood_scores = None
+        if self.ood_model is not None and hasattr(self.wavenet_model.wavenet, 'predictor_features'):
+            try:
+                # Get predictor penultimate features (already on CPU from WaveNet forward pass)
+                penultimate = self.wavenet_model.wavenet.predictor_features  # Shape: (batch_size, n_features)
+
+                # Convert to numpy and compute Mahalanobis distance
+                features_np = penultimate.numpy()  # Already on CPU
+                if self.ood_mean is not None:
+                    features_centered = features_np - self.ood_mean.cpu().numpy()
+                    mahalanobis_dist = self.ood_model.mahalanobis(features_centered)
+
+                    # Store as tensor
+                    ood_scores = torch.tensor(mahalanobis_dist, device=self.device_val, dtype=torch.float32)
+                else:
+                    ood_scores = None
+            except Exception as e:
+                print(f"⚠️  OOD detection failed: {e}")
+                ood_scores = None
+
         # Ensure all tensors are on the same device before concatenation
         device = total_zernikes.device
 
@@ -603,6 +677,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         fy = fy.to(device)
         SNR = SNR.to(device)
         self.total_zernikes = total_zernikes
+        self.ood_scores = ood_scores
         # Match training data normalization: use local max like in dataloader
         # Training data: snr = torch.tensor(loaded_data["snr"]).to(self.device)[..., None] / torch.tensor(loaded_data["snr"]).max()
         # Note: Training data uses global max across all data, but we only have local data

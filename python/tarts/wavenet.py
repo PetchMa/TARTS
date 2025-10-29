@@ -298,6 +298,8 @@ class WaveNet(nn.Module):
             cnn_features = torch.nn.functional.adaptive_avg_pool2d(cnn_features, (1, 1))
             cnn_features = cnn_features.flatten(1)
 
+        # Store features for inspection/debugging (clone to avoid affecting forward pass)
+        # self.cnn_features = cnn_features.clone().detach().cpu()
         # predict zernikes from all features
         features = torch.cat(
             [
@@ -309,6 +311,14 @@ class WaveNet(nn.Module):
             ],
             dim=1,
         )
-        zernikes = self.predictor(features)
+        # Penultimate features (output of predictor just before final linear layer)
+        if len(self.predictor) >= 1:
+            pre_logits = self.predictor[:-1](features)
+            self.predictor_features = pre_logits.clone().detach().cpu()
+            zernikes = self.predictor[-1](pre_logits)
+        else:
+            # Edge case: no layers (shouldn't happen); fallback
+            self.predictor_features = features.clone().detach().cpu()
+            zernikes = features
 
         return zernikes
