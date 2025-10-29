@@ -3,6 +3,7 @@
 import torch
 from torch import nn
 from torchvision import models as cnn_models
+import timm
 from .KERNEL import CUTOUT as DONUT
 # import torch.nn.functional as F_  # Unused import
 
@@ -97,6 +98,7 @@ class WaveNet(nn.Module):
         cnn_model: str = "resnet18",
         freeze_cnn: bool = False,
         n_predictor_layers: tuple = (256,),
+        n_zernikes: int = 25,
         device='cuda',
         pretrained: bool = True,
     ) -> None:
@@ -105,28 +107,28 @@ class WaveNet(nn.Module):
         Parameters
         ----------
         cnn_model: str, default="resnet18"
-            The name of the pre-trained CNN model from torchvision.
+            The name of the pre-trained CNN model from torchvision or timm.
+            Supports both torchvision models (e.g., "resnet18") and timm models (e.g., "mobilenetv4_conv_small").
         freeze_cnn: bool, default=False
             Whether to freeze the CNN weights.
         n_predictor_layers: tuple, default=(256)
             Number of nodes in the hidden layers of the Zernike predictor network.
-            This does not include the output layer, which is fixed to 19.
+            This does not include the output layer, which is determined by n_zernikes.
+        n_zernikes: int, default=25
+            Number of Zernike coefficients to predict.
         device: str, default='cuda'
             Device to run the model on ('cuda' or 'cpu').
         pretrained: bool, default=True
             Whether to use pre-trained CNN weights. Set to False to avoid downloading weights.
         """
         super().__init__()
+        self.device_val = device
 
         # load the CNN
-        weights_param = "DEFAULT" if pretrained else None
-        self.cnn = getattr(cnn_models, cnn_model)(weights=weights_param)
-
-        # save the number of cnn features
-        self.n_cnn_features = self.cnn.fc.in_features
+        self._load_cnn_backbone(cnn_model, pretrained)
 
         # remove the final fully connected layer
-        self.cnn.fc = nn.Identity()
+        self._remove_final_layer()
 
         if freeze_cnn:
             # freeze cnn parameters
@@ -156,15 +158,68 @@ class WaveNet(nn.Module):
                 ]
 
             # add the final layer
-            layers += [nn.Linear(n_predictor_layers[-1], 17)]
+            layers += [nn.Linear(n_predictor_layers[-1], n_zernikes)]
 
         else:
-            layers = [nn.Linear(n_features, 17)]
-        self.device_val = device
-        self.predictor = nn.Sequential(*layers)
+            layers = [nn.Linear(n_features, n_zernikes)]
+
+        self.predictor = nn.Sequential(*layers).to(self.device_val)
 
         # Cache the donut mask to avoid repeated computation
         self._donut_mask = None
+
+        # Ensure all model parameters are in float32 to avoid dtype mismatches
+        self.float()
+
+    def _load_cnn_backbone(self, cnn_model: str, pretrained: bool) -> None:
+        """Load CNN backbone from either torchvision or timm.
+
+        Parameters
+        ----------
+        cnn_model : str
+            The name of the CNN model.
+        pretrained : bool
+            Whether to use pre-trained weights.
+        """
+        # Check if it's a timm model (MobileNetV4, etc.)
+        if cnn_model.startswith("mobilenetv4") or cnn_model in timm.list_models():
+            # Load from timm
+            self.cnn = timm.create_model(
+                cnn_model,
+                pretrained=pretrained,
+                num_classes=0  # This removes the classifier and returns pooled features
+            ).to(self.device_val).float()  # Explicitly convert to float32
+            self.is_timm_model = True
+
+            # Get actual feature dimension by doing a dummy forward pass
+            # This is more reliable than trusting num_features for some models
+            self.cnn.eval()  # Set to eval mode to avoid batch norm issues with batch_size=1
+            with torch.no_grad():
+                dummy_input = torch.randn(1, 3, 224, 224).to(self.device_val)
+                dummy_output = self.cnn(dummy_input)
+                # Handle both 2D (batch, features) and 4D (batch, channels, h, w) outputs
+                if len(dummy_output.shape) == 4:
+                    dummy_output = torch.nn.functional.adaptive_avg_pool2d(dummy_output, (1, 1))
+                    dummy_output = dummy_output.flatten(1)
+                self.n_cnn_features = dummy_output.shape[1]
+            self.cnn.train()  # Set back to training mode
+        else:
+            # Load from torchvision
+            weights_param = "DEFAULT" if pretrained else None
+            self.cnn = getattr(cnn_models, cnn_model)(weights=weights_param).to(self.device_val).float()  # Explicitly convert to float32
+            # Get feature dimension
+            self.n_cnn_features = self.cnn.fc.in_features
+            self.is_timm_model = False
+
+    def _remove_final_layer(self) -> None:
+        """Remove the final fully connected layer from the CNN."""
+        if self.is_timm_model:
+            # For timm models, we already set num_classes=0, so nothing to do
+            pass
+        else:
+            # For torchvision models, remove the final fully connected layer
+            if hasattr(self.cnn, 'fc'):
+                self.cnn.fc = nn.Identity()
 
     def _get_donut_mask(self, device):
         """Get cached donut mask."""
@@ -177,8 +232,19 @@ class WaveNet(nn.Module):
         # add a channel dimension
         image = image[..., None, :, :]
 
+        # Get the number of input channels required by the CNN
+        if hasattr(self.cnn, 'conv1'):
+            # torchvision models (ResNet, etc.)
+            n_channels = self.cnn.conv1.in_channels
+        elif hasattr(self.cnn, 'conv_stem'):
+            # timm models (MobileNet, etc.)
+            n_channels = self.cnn.conv_stem.in_channels
+        else:
+            # Default to 3 channels if we can't determine
+            n_channels = 3
+
         # duplicate image for each channel
-        image = image.repeat_interleave(self.cnn.conv1.in_channels, dim=-3)
+        image = image.repeat_interleave(n_channels, dim=-3)
 
         return image
 
@@ -219,6 +285,14 @@ class WaveNet(nn.Module):
         # use cnn to extract image features with optimized blur
         # image = apply_gaussian_blur(image.clone(), kernel_size=21, sigma=15, donut_mask=donut_mask)
         cnn_features = self.cnn(image.to(self.device_val))
+
+        # For timm models with num_classes=0, we might still get 4D feature maps
+        # depending on the model architecture. Apply pooling if needed.
+        if len(cnn_features.shape) == 4:
+            # cnn_features shape: [batch, channels, height, width]
+            # Apply global average pooling to get [batch, channels]
+            cnn_features = torch.nn.functional.adaptive_avg_pool2d(cnn_features, (1, 1))
+            cnn_features = cnn_features.flatten(1)
 
         # predict zernikes from all features
         features = torch.cat(

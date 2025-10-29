@@ -272,25 +272,34 @@ def convert_zernikes_deploy(
     # these conversion factors depend on telescope radius and obscuration
     # the numbers below are for the Rubin telescope; different numbers
     # are needed for Auxtel. For calculating these factors, see ts_phosim
+    # ZK4-ZK28
     arcsec_per_micron = torch.tensor(
         [
-            0.75453564,  # Z4
-            0.2711315,   # Z5
-            0.2711315,   # Z6
-            0.82237164,  # Z7
-            0.82237164,  # Z8
-            0.39572461,  # Z9
-            0.39572461,  # Z10
-            1.68719298,  # Z11
-            0.93956571,  # Z12
-            0.93956571,  # Z13
-            0.51643078,  # Z14
-            0.51643078,  # Z15
-            0.63498144,  # Z20
-            0.63498144,  # Z21
-            2.82321385,  # Z22
-            0.75241174,  # Z27
-            0.75241174   # Z28
+            0.75453564,
+            0.2711315,
+            0.2711315,
+            0.82237164,
+            0.82237164,
+            0.39572461,
+            0.39572461,
+            1.68719298,
+            0.93956571,
+            0.93956571,
+            0.51643078,
+            0.51643078,
+            1.76255706,
+            1.76255706,
+            1.09112012,
+            1.09112012,
+            0.63498144,
+            0.63498144,
+            2.82321385,
+            1.87588235,
+            1.87588235,
+            1.26437424,
+            1.26437424,
+            0.75241174,
+            0.75241174
         ]
     ).to(zernikes.device)
 

@@ -3,6 +3,7 @@
 import torch
 from torch import nn
 from torchvision import models as cnn_models
+import timm
 
 
 class AlignNet(nn.Module):
@@ -19,9 +20,10 @@ class AlignNet(nn.Module):
 
     Parameters
     ----------
-    cnn_model : str, optional, default="resnet34"
+    cnn_model : str, optional, default="mobilenetv4_conv_small"
         The name of the pre-trained CNN model from
-        `torchvision.models` to be used as the feature extractor.
+        `torchvision.models` or `timm` to be used as the feature extractor.
+        Supports both torchvision models (e.g., "resnet34") and timm models (e.g., "mobilenetv4_conv_small").
     freeze_cnn : bool, optional, default=False
         Whether to freeze the CNN weights, preventing updates during training.
     n_predictor_layers : tuple of int, optional, default=(256,)
@@ -38,7 +40,7 @@ class AlignNet(nn.Module):
 
     def __init__(
         self,
-        cnn_model: str = "resnet34",
+        cnn_model: str = "mobilenetv4_conv_small",
         freeze_cnn: bool = False,
         n_predictor_layers: tuple = (256,),
         device='cuda',
@@ -48,9 +50,9 @@ class AlignNet(nn.Module):
 
         Parameters
         ----------
-        cnn_model : str, optional, default="resnet34"
+        cnn_model : str, optional, default="mobilenetv4_conv_small"
             The name of the pre-trained CNN model from
-            `torchvision.models`.
+            `torchvision.models` or `timm`. Supports both libraries.
         freeze_cnn : bool, optional, default=False
             Whether to freeze the CNN weights, preventing
             updates during training.
@@ -65,7 +67,7 @@ class AlignNet(nn.Module):
 
         Notes
         -----
-        - The CNN backbone is loaded from `torchvision.models`
+        - The CNN backbone is loaded from `torchvision.models` or `timm`
             and modified to remove the final fully connected layer.
         - If `freeze_cnn` is `True`, all CNN parameters are frozen,
             and the model is set to evaluation mode.
@@ -77,14 +79,10 @@ class AlignNet(nn.Module):
         super().__init__()
         self.device_val = device
         # load the CNN
-        weights_param = "DEFAULT" if pretrained else None
-        self.cnn = getattr(cnn_models, cnn_model)(weights=weights_param).to('cpu')
-
-        # save the number of cnn features
-        self.n_cnn_features = self.cnn.fc.in_features
+        self._load_cnn_backbone(cnn_model, pretrained)
 
         # remove the final fully connected layer
-        self.cnn.fc = nn.Identity()
+        self._remove_final_layer()
 
         if freeze_cnn:
             # freeze cnn parameters
@@ -95,7 +93,6 @@ class AlignNet(nn.Module):
         # create linear layers that predict zernikes
         n_meta_features = 4  # includes field_x, field_y, intra flag, wavelen
         n_features = self.n_cnn_features + n_meta_features
-
         if len(n_predictor_layers) > 0:
             # start with the very first layer
             layers = [
@@ -119,12 +116,65 @@ class AlignNet(nn.Module):
         else:
             layers = [nn.Linear(n_features, 2)]
 
-        self.predictor = nn.Sequential(*layers)
+        self.predictor = nn.Sequential(*layers).to(self.device_val)
+
+        # Ensure all model parameters are in float32 to avoid dtype mismatches
+        self.float()
+
+    def _load_cnn_backbone(self, cnn_model: str, pretrained: bool) -> None:
+        """Load CNN backbone from either torchvision or timm.
+
+        Parameters
+        ----------
+        cnn_model : str
+            The name of the CNN model.
+        pretrained : bool
+            Whether to use pre-trained weights.
+        """
+        # Check if it's a timm model (MobileNetV4, etc.)
+        if cnn_model.startswith("mobilenetv4") or cnn_model in timm.list_models():
+            # Load from timm
+            self.cnn = timm.create_model(
+                cnn_model,
+                pretrained=pretrained,
+                num_classes=0  # This removes the classifier and returns pooled features
+            ).to(self.device_val).float()  # Explicitly convert to float32
+            self.is_timm_model = True
+
+            # Get actual feature dimension by doing a dummy forward pass
+            # This is more reliable than trusting num_features for some models
+            self.cnn.eval()  # Set to eval mode to avoid batch norm issues with batch_size=1
+            with torch.no_grad():
+                dummy_input = torch.randn(1, 3, 224, 224).to(self.device_val)
+                dummy_output = self.cnn(dummy_input)
+                # Handle both 2D (batch, features) and 4D (batch, channels, h, w) outputs
+                if len(dummy_output.shape) == 4:
+                    dummy_output = torch.nn.functional.adaptive_avg_pool2d(dummy_output, (1, 1))
+                    dummy_output = dummy_output.flatten(1)
+                self.n_cnn_features = dummy_output.shape[1]
+            self.cnn.train()  # Set back to training mode
+        else:
+            # Load from torchvision
+            weights_param = "DEFAULT" if pretrained else None
+            self.cnn = getattr(cnn_models, cnn_model)(weights=weights_param).to(self.device_val).float()  # Explicitly convert to float32
+            # Get feature dimension
+            self.n_cnn_features = self.cnn.fc.in_features
+            self.is_timm_model = False
+
+    def _remove_final_layer(self) -> None:
+        """Remove the final fully connected layer from the CNN."""
+        if self.is_timm_model:
+            # For timm models, we already set num_classes=0, so nothing to do
+            pass
+        else:
+            # For torchvision models, remove the final fully connected layer
+            if hasattr(self.cnn, 'fc'):
+                self.cnn.fc = nn.Identity()
 
     def _reshape_image(self, image: torch.Tensor) -> torch.Tensor:
         """Expand a single-channel image tensor to have three identical channels.
 
-        This is to make the data RESNET friendly.
+        This is to make the data compatible with CNN models that expect 3-channel input.
 
         Parameters
         ----------
@@ -144,13 +194,24 @@ class AlignNet(nn.Module):
         -----
         - A channel dimension is first added to the input tensor.
         - The single-channel image is then duplicated to match
-            the number of input channels
-          required by the first convolutional layer of the CNN.
+            the number of input channels required by the CNN.
         """
         # add a channel dimension
         image = image[..., None, :, :]
+
+        # Get the number of input channels required by the CNN
+        if hasattr(self.cnn, 'conv1'):
+            # torchvision models (ResNet, etc.)
+            n_channels = self.cnn.conv1.in_channels
+        elif hasattr(self.cnn, 'conv_stem'):
+            # timm models (MobileNet, etc.)
+            n_channels = self.cnn.conv_stem.in_channels
+        else:
+            # Default to 3 channels if we can't determine
+            n_channels = 3
+
         # duplicate image for each channel
-        image = image.repeat_interleave(self.cnn.conv1.in_channels, dim=-3)
+        image = image.repeat_interleave(n_channels, dim=-3)
         return image
 
     def forward(
@@ -187,6 +248,14 @@ class AlignNet(nn.Module):
         image = self._reshape_image(image)
         # use cnn to extract image features
         cnn_features = self.cnn(image.to(self.device_val))
+
+        # For timm models with num_classes=0, we might still get 4D feature maps
+        # depending on the model architecture. Apply pooling if needed.
+        if len(cnn_features.shape) == 4:
+            # cnn_features shape: [batch, channels, height, width]
+            # Apply global average pooling to get [batch, channels]
+            cnn_features = torch.nn.functional.adaptive_avg_pool2d(cnn_features, (1, 1))
+            cnn_features = cnn_features.flatten(1)
 
         # predict zernikes from all features
         features = torch.cat(

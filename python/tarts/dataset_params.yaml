@@ -19,13 +19,13 @@ coral_filepath_usdf_val: '~/val'
 aggregator_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator/'
 aggregator_train_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator/train/'
 aggregator_val_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator/val/'
-fullframe_train_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_plane_ml_rotations/train/'
-fullframe_val_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_plane_ml_rotations/val/'
-fullframe_test_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_plane_ml_rotations/test/'
+fullframe_train_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_plane_ml_opsim_0925/train/'
+fullframe_val_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_plane_ml_opsim_0925/val/'
+fullframe_test_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_plane_ml_opsim_0925/test/'
 
 # AggregatorNet model parameters
 aggregator_model:
-  d_model: 20
+  d_model: 28
   nhead: 2
   num_layers: 6
   dim_feedforward: 128
@@ -43,8 +43,16 @@ noll_zk:
 - 13
 - 14
 - 15
+- 16
+- 17
+- 18
+- 19
 - 20
 - 21
 - 22
+- 23
+- 24
+- 25
+- 26
 - 27
 - 28

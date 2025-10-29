@@ -140,36 +140,46 @@ class WaveNetSystem(pl.LightningModule):
         cnn_model: str = "resnet34",
         freeze_cnn: bool = False,
         n_predictor_layers: tuple = (256,),
+        n_zernikes: int = 25,
         alpha: float = 0,
         lr: float = 1e-3,
         lr_schedule: bool = False,
+        device: str = 'cuda',
         pretrained: bool = False,
     ) -> None:
         """Create the WaveNet.
 
         Parameters
         ----------
-        cnn_model: str, default="resnet18"
-            The name of the pre-trained CNN model from torchvision.
+        cnn_model: str, default="resnet34"
+            The name of the pre-trained CNN model from torchvision or timm.
+            Supports both torchvision models (e.g., "resnet34") and timm models (e.g., "mobilenetv4_conv_small").
         freeze_cnn: bool, default=False
             Whether to freeze the CNN weights.
         n_predictor_layers: tuple, default=(256)
             Number of nodes in the hidden layers of the Zernike predictor network.
-            This does not include the output layer, which is fixed to 19.
+            This does not include the output layer, which is determined by n_zernikes.
+        n_zernikes: int, default=25
+            Number of Zernike coefficients to predict.
         alpha: float, default=0
             Weight for the L2 penalty.
         lr: float, default=1e-3
             The initial learning rate for Adam.
         lr_schedule: bool, default=True
             Whether to use the ReduceLROnPlateau learning rate scheduler.
+        device: str, default='cuda'
+            The device to use for computation ('cuda' or 'cpu').
         pretrained: bool, default=False
             Whether to use pre-trained CNN weights. Set to True to download pre-trained weights.
         """
         super().__init__()
         self.save_hyperparameters()
+        self.device_val = torch.device(device if torch.cuda.is_available() else "cpu")
         self.wavenet = WaveNet(
             cnn_model=cnn_model,
             n_predictor_layers=n_predictor_layers,
+            n_zernikes=n_zernikes,
+            device=device,
             pretrained=pretrained,
         )
 
@@ -177,7 +187,6 @@ class WaveNetSystem(pl.LightningModule):
         # the MachineLearningAlgorithm in ts_wep
         self.camType = "LsstCam"
         self.inputShape = (160, 160)
-        self.device_val = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def predict_step(
         self, batch: dict, batch_idx: int

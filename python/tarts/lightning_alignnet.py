@@ -75,7 +75,7 @@ class AlignNetSystem(pl.LightningModule):
 
     def __init__(
         self,
-        cnn_model: str = "resnet34",
+        cnn_model: str = "mobilenetv4_conv_small",
         freeze_cnn: bool = False,
         n_predictor_layers: tuple = (256,),
         alpha: float = 0,
@@ -92,9 +92,9 @@ class AlignNetSystem(pl.LightningModule):
 
         Parameters
         ----------
-        cnn_model : str, optional, default="resnet34"
-            The name of the pre-trained CNN model from torchvision to be used as the feature extractor.
-            Common options include "resnet18", "resnet34", etc.
+        cnn_model : str, optional, default="mobilenetv4_conv_small"
+            The name of the pre-trained CNN model from torchvision or timm to be used as the feature extractor.
+            Common options include "resnet18", "resnet34", "mobilenetv4_conv_small", etc.
 
         freeze_cnn : bool, optional, default=False
             If True, the CNN weights will be frozen during training, meaning they will not be updated.
@@ -171,7 +171,9 @@ class AlignNetSystem(pl.LightningModule):
         # calculate loss
         sse = F.mse_loss(pred_offset, true_offset, reduction="none").sum(dim=-1)
         loss = sse.mean() + self.hparams.alpha * A.square().sum()
-        mRSSE = torch.sqrt(sse).mean()
+        # Clamp SSE to prevent sqrt of negative values due to numerical errors
+        sse_clamped = torch.clamp(sse, min=0.0)
+        mRSSE = torch.sqrt(sse_clamped).mean()
 
         return loss, mRSSE
 

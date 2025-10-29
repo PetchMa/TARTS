@@ -284,6 +284,7 @@ tblib
 terminado==0.18.1
 threadpoolctl
 tifffile
+timm
 time-machine
 tinycss2==1.4.0
 toml

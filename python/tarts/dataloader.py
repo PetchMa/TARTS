@@ -221,12 +221,12 @@ class Donuts(Dataset):
         )
         # track the offset vector and renormalise the vector amount
         offset_vec = (
-            np.array(np.array(offset_amount).astype(np.float16))
+            np.array(np.array(offset_amount).astype(np.float32))
             / self.adjustment_factor
         )
         # compute the radial offset factor (vector norm)
         offset_r = np.sqrt(offset_amount[0] ** 2 + offset_amount[1] ** 2)
-        offset_r = np.array(offset_r.astype(np.float16))[None] / self.adjustment_factor
+        offset_r = np.array(offset_r.astype(np.float32))[None] / self.adjustment_factor
 
         # record the meta data
         fx = torch.FloatTensor([fx])
@@ -479,11 +479,11 @@ class Donuts_Fullframe(Dataset):
             )
             # Add offset information to output
             offset_vec = (
-                np.array(np.array(offset_amount).astype(np.float16))
+                np.array(np.array(offset_amount).astype(np.float32))
                 / self.adjustment_factor
             )
             offset_r = np.sqrt(offset_amount[0] ** 2 + offset_amount[1] ** 2)
-            offset_r = np.array(offset_r.astype(np.float16)) / self.adjustment_factor
+            offset_r = np.array(offset_r.astype(np.float32)) / self.adjustment_factor
         else:
             offset_amount = [0, 0]
             offset_vec = np.array([0.0, 0.0])
@@ -681,7 +681,7 @@ class zernikeDataset(Dataset):
         position = torch.concatenate([field_x, field_y], axis=-1).to(self.device)
         # combine all into one array as an embedding
         # Remove singleton dimension for correct concatenation
-        x = x.squeeze(1)           # [seq_length, 17]
+        x = x.squeeze(1)           # [seq_length, 25]
         position = position.squeeze(1)  # [seq_length, 2]
         x_total = torch.cat([x, position, snr], dim=1)
         # control padding the sequence
