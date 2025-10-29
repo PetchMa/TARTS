@@ -77,7 +77,11 @@ class AlignNet(nn.Module):
 
         """
         super().__init__()
-        self.device_val = device
+        # Check CUDA availability and convert device string to torch.device
+        if isinstance(device, str):
+            self.device_val = torch.device(device if torch.cuda.is_available() else "cpu")
+        else:
+            self.device_val = device if torch.cuda.is_available() else torch.device("cpu")
         # load the CNN
         self._load_cnn_backbone(cnn_model, pretrained)
 

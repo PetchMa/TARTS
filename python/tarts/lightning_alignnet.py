@@ -123,10 +123,11 @@ class AlignNetSystem(pl.LightningModule):
         """
         super().__init__()
         self.save_hyperparameters()
+        self.device_val = torch.device(device if torch.cuda.is_available() else "cpu")
         self.alignnet = AlignNet(
             cnn_model=cnn_model,
             n_predictor_layers=n_predictor_layers,
-            device=device,
+            device=str(self.device_val),
             pretrained=pretrained
         )
 
@@ -134,7 +135,6 @@ class AlignNetSystem(pl.LightningModule):
         # the MachineLearningAlgorithm in ts_wep
         self.camType = "LsstCam"
         self.inputShape = (160, 160)
-        self.device_val = device
 
     def predict_step(
         self, batch: dict, batch_idx: int

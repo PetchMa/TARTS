@@ -179,7 +179,7 @@ class WaveNetSystem(pl.LightningModule):
             cnn_model=cnn_model,
             n_predictor_layers=n_predictor_layers,
             n_zernikes=n_zernikes,
-            device=device,
+            device=str(self.device_val),
             pretrained=pretrained,
         )
 
