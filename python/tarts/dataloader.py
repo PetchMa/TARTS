@@ -390,7 +390,7 @@ class Donuts_Fullframe(Dataset):
                     if os.path.exists(img_file):
                         os.remove(img_file)
                         print(f"✓ Deleted corrupted file: {img_file}")
-                except Exception as delete_error:
+                except (OSError, PermissionError) as delete_error:
                     print(f"⚠️  Failed to delete {img_file}: {delete_error}")
 
                 # Remove from list to avoid trying again

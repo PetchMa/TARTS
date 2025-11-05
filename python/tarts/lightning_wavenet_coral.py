@@ -326,7 +326,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
                 # Compute DARE-GRAM loss for logging
                 dare_gram_loss = self.dare_gram_loss(source_features, target_features)
-            except Exception as e:
+            except (RuntimeError, ValueError, IndexError) as e:
                 print(f"⚠️  DARE-GRAM loss computation failed: {e}")
                 dare_gram_loss = torch.tensor(0.0, device=self.device_val)
 

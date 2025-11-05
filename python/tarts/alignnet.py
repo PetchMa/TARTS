@@ -165,9 +165,10 @@ class AlignNet(nn.Module):
         else:
             # Load from torchvision
             weights_param = "DEFAULT" if pretrained else None
-            self.cnn = (
-                getattr(cnn_models, cnn_model)(weights=weights_param).to(self.device_val).float()
-            )  # Explicitly convert to float32
+            if not hasattr(cnn_models, cnn_model):
+                raise ValueError(f"Unknown torchvision model: {cnn_model}")
+            model_fn = getattr(cnn_models, cnn_model)
+            self.cnn = model_fn(weights=weights_param).to(self.device_val).float()
             # Get feature dimension
             self.n_cnn_features = self.cnn.fc.in_features
             self.is_timm_model = False
@@ -179,8 +180,8 @@ class AlignNet(nn.Module):
             pass
         else:
             # For torchvision models, remove the final fully connected layer
-            if hasattr(self.cnn, "fc"):
-                self.cnn.fc = nn.Identity()
+            # torchvision models always have fc layer
+            self.cnn.fc = nn.Identity()
 
     def _reshape_image(self, image: torch.Tensor) -> torch.Tensor:
         """Expand a single-channel image tensor to have three identical channels.
@@ -211,15 +212,12 @@ class AlignNet(nn.Module):
         image = image[..., None, :, :]
 
         # Get the number of input channels required by the CNN
-        if hasattr(self.cnn, "conv1"):
-            # torchvision models (ResNet, etc.)
-            n_channels = self.cnn.conv1.in_channels
-        elif hasattr(self.cnn, "conv_stem"):
+        if self.is_timm_model:
             # timm models (MobileNet, etc.)
             n_channels = self.cnn.conv_stem.in_channels
         else:
-            # Default to 3 channels if we can't determine
-            n_channels = 3
+            # torchvision models (ResNet, etc.)
+            n_channels = self.cnn.conv1.in_channels
 
         # duplicate image for each channel
         image = image.repeat_interleave(n_channels, dim=-3)

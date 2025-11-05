@@ -137,6 +137,8 @@ class QuantizationAwareTrainingCallback(pl.Callback):
         print(f"🔥 Enabling Quantization Aware Training at epoch {self.start_epoch}")
         torch.backends.quantized.engine = self.quantization_backend
 
+        if not hasattr(pl_module, self.model_attr):
+            raise AttributeError(f"Module {type(pl_module).__name__} has no attribute '{self.model_attr}'")
         model = getattr(pl_module, self.model_attr)
         model.qconfig = default_qat_qconfig
 
@@ -144,6 +146,8 @@ class QuantizationAwareTrainingCallback(pl.Callback):
             for module_name, qconfig in self.qconfig_dict.items():
                 module = model
                 for attr in module_name.split("."):
+                    if not hasattr(module, attr):
+                        raise AttributeError(f"Module {type(module).__name__} has no attribute '{attr}'")
                     module = getattr(module, attr)
                 module.qconfig = qconfig
 
@@ -154,6 +158,10 @@ class QuantizationAwareTrainingCallback(pl.Callback):
         """Disable QAT at the end of training."""
         if self.qat_enabled:
             print("🔧 Converting QAT model to quantized model...")
+            if not hasattr(pl_module, self.model_attr):
+                raise AttributeError(
+                    f"Module {type(pl_module).__name__} has no attribute '{self.model_attr}'"
+                )
             model = getattr(pl_module, self.model_attr)
             model.eval()
             quantized_model = torch.quantization.convert(model)

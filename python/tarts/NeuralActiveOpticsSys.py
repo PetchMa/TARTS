@@ -3,7 +3,7 @@
 # Standard library imports
 import copy
 import os
-from typing import Any
+from typing import Any, Dict, List
 
 # Third-party imports
 import joblib
@@ -84,19 +84,27 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         self.save_hyperparameters()
         self.device_val = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        # Initialize attributes that may be set during forward pass
+        # These can be lists or tensors depending on context
+        self.fx: List[torch.Tensor] | torch.Tensor = []
+        self.fy: List[torch.Tensor] | torch.Tensor = []
+        self.intra: List[torch.Tensor] | torch.Tensor = []
+        self.band: List[torch.Tensor] | torch.Tensor = []
+        self.SNR: List[torch.Tensor] | torch.Tensor = []
+        self.centers: List[torch.Tensor] | torch.Tensor = []
+        self.total_zernikes: torch.Tensor | None = None
+        self.cropped_image: torch.Tensor | None = None
+        self.ood_scores: torch.Tensor | None = None
+
         # Load OOD detection model if path is provided
         self.ood_model = None
         self.ood_mean = None
         if ood_model_path is not None and os.path.exists(ood_model_path):
-            try:
-                print(f"Loading OOD detection model from {ood_model_path}...")
-                ood_data = joblib.load(ood_model_path)
-                self.ood_model = ood_data["cov_model"]
-                self.ood_mean = torch.tensor(ood_data["mean"], device=self.device_val, dtype=torch.float32)
-                print("✅ OOD detection model loaded successfully")
-            except Exception as e:
-                print(f"⚠️  Failed to load OOD model: {e}")
-                print("   Continuing without OOD detection...")
+            print(f"Loading OOD detection model from {ood_model_path}...")
+            ood_data = joblib.load(ood_model_path)
+            self.ood_model = ood_data["cov_model"]
+            self.ood_mean = torch.tensor(ood_data["mean"], device=self.device_val, dtype=torch.float32)
+            print("✅ OOD detection model loaded successfully")
         elif ood_model_path is not None:
             print(f"⚠️  OOD model path provided but file not found: {ood_model_path}")
             print("   Continuing without OOD detection...")
@@ -124,7 +132,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                     alignet_path, map_location=str(self.device_val)
                 ).to(self.device_val)
                 print("✅ Loaded AlignNet regular checkpoint")
-            except Exception:
+            except (FileNotFoundError, RuntimeError, KeyError, AttributeError):
                 print("⚠️  Regular AlignNet loading failed")
                 print("🔄 Trying to load AlignNet as QAT-trained model...")
                 from training.load_qat_model import load_qat_trained_model
@@ -187,7 +195,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 else:
                     self.wavenet_model = torch.compile(self.wavenet_model)
                 print(f"✅ WaveNet compiled with backend: {compile_backend or 'default'}")
-            except Exception as e:
+            except (RuntimeError, TypeError, AttributeError) as e:
                 print(f"⚠️  WaveNet compilation failed: {e}")
 
             try:
@@ -196,7 +204,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 else:
                     self.alignnet_model = torch.compile(self.alignnet_model)
                 print(f"✅ AlignNet compiled with backend: {compile_backend or 'default'}")
-            except Exception as e:
+            except (RuntimeError, TypeError, AttributeError) as e:
                 print(f"⚠️  AlignNet compilation failed: {e}")
 
             try:
@@ -207,7 +215,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 else:
                     self.aggregatornet_model = torch.compile(self.aggregatornet_model)
                 print(f"✅ AggregatorNet compiled with backend: {compile_backend or 'default'}")
-            except Exception as e:
+            except (RuntimeError, TypeError, AttributeError) as e:
                 print(f"⚠️  AggregatorNet compilation failed: {e}")
 
             print("🎉 Model compilation completed!")
@@ -235,7 +243,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             else:
                 self.wavenet_model = torch.compile(self.wavenet_model)
             print(f"✅ WaveNet compiled with backend: {compile_backend or 'default'}")
-        except Exception as e:
+        except (RuntimeError, TypeError, AttributeError) as e:
             print(f"⚠️  WaveNet compilation failed: {e}")
 
         try:
@@ -244,7 +252,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             else:
                 self.alignnet_model = torch.compile(self.alignnet_model)
             print(f"✅ AlignNet compiled with backend: {compile_backend or 'default'}")
-        except Exception as e:
+        except (RuntimeError, TypeError, AttributeError) as e:
             print(f"⚠️  AlignNet compilation failed: {e}")
 
         try:
@@ -253,7 +261,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             else:
                 self.aggregatornet_model = torch.compile(self.aggregatornet_model)
             print(f"✅ AggregatorNet compiled with backend: {compile_backend or 'default'}")
-        except Exception as e:
+        except (RuntimeError, TypeError, AttributeError) as e:
             print(f"⚠️  AggregatorNet compilation failed: {e}")
 
         print("🎉 Model compilation completed!")
@@ -278,11 +286,15 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             List of dictionaries, each containing the data for one donut.
             Returns empty list if no data is available.
         """
-        internal_data = []
+        internal_data: List[Dict[str, Any]] = []
 
         # Check if we have valid data (not NaN-filled)
-        if hasattr(self, "fx") and len(self.fx) > 0 and not torch.isnan(self.fx[0]):
+        if len(self.fx) > 0 and isinstance(self.fx, list) and not torch.isnan(self.fx[0]):
             num_donuts = len(self.fx)
+
+            # Ensure these are not None before indexing
+            if self.cropped_image is None or self.total_zernikes is None:
+                return internal_data
 
             for i in range(num_donuts):
                 data_dict = {
@@ -296,7 +308,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                     "zernikes": self.total_zernikes[i].clone().detach(),
                 }
                 # Add OOD score if available
-                if hasattr(self, "ood_scores") and self.ood_scores is not None and i < len(self.ood_scores):
+                if self.ood_scores is not None and i < len(self.ood_scores):
                     data_dict["ood_score"] = self.ood_scores[i].clone().detach()
                 else:
                     data_dict["ood_score"] = None
@@ -549,23 +561,17 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         # Compute OOD scores if OOD model is available
         ood_scores = None
-        if self.ood_model is not None and hasattr(self.wavenet_model.wavenet, "predictor_features"):
-            try:
-                # Get predictor penultimate features and detach/convert to CPU for numpy
-                penultimate = self.wavenet_model.wavenet.predictor_features  # Shape: (batch_size, n_features)
+        if self.ood_model is not None and self.wavenet_model.wavenet.predictor_features is not None:
+            # Get predictor penultimate features and detach/convert to CPU for numpy
+            penultimate = self.wavenet_model.wavenet.predictor_features  # Shape: (batch_size, n_features)
 
-                # Detach from computation graph and move to CPU for numpy conversion
-                features_np = penultimate.detach().cpu().numpy()
-                if self.ood_mean is not None:
-                    features_centered = features_np - self.ood_mean.cpu().numpy()
-                    mahalanobis_dist = self.ood_model.mahalanobis(features_centered)
-                    # Store as tensor
-                    ood_scores = torch.tensor(mahalanobis_dist, device=self.device_val, dtype=torch.float32)
-                else:
-                    ood_scores = None
-            except Exception as e:
-                print(f"⚠️  OOD detection failed: {e}")
-                ood_scores = None
+            # Detach from computation graph and move to CPU for numpy conversion
+            features_np = penultimate.detach().cpu().numpy()
+            if self.ood_mean is not None:
+                features_centered = features_np - self.ood_mean.cpu().numpy()
+                mahalanobis_dist = self.ood_model.mahalanobis(features_centered)
+                # Store as tensor
+                ood_scores = torch.tensor(mahalanobis_dist, device=self.device_val, dtype=torch.float32)
 
         # Ensure all tensors are on the same device before concatenation
         device = total_zernikes.device
@@ -720,24 +726,18 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         # Compute OOD scores if OOD model is available
         ood_scores = None
-        if self.ood_model is not None and hasattr(self.wavenet_model.wavenet, "predictor_features"):
-            try:
-                # Get predictor penultimate features and detach/convert to CPU for numpy
-                penultimate = self.wavenet_model.wavenet.predictor_features  # Shape: (batch_size, n_features)
+        if self.ood_model is not None and self.wavenet_model.wavenet.predictor_features is not None:
+            # Get predictor penultimate features and detach/convert to CPU for numpy
+            penultimate = self.wavenet_model.wavenet.predictor_features  # Shape: (batch_size, n_features)
 
-                # Detach from computation graph and move to CPU for numpy conversion
-                features_np = penultimate.detach().cpu().numpy()
-                if self.ood_mean is not None:
-                    features_centered = features_np - self.ood_mean.cpu().numpy()
-                    mahalanobis_dist = self.ood_model.mahalanobis(features_centered)
+            # Detach from computation graph and move to CPU for numpy conversion
+            features_np = penultimate.detach().cpu().numpy()
+            if self.ood_mean is not None:
+                features_centered = features_np - self.ood_mean.cpu().numpy()
+                mahalanobis_dist = self.ood_model.mahalanobis(features_centered)
 
-                    # Store as tensor
-                    ood_scores = torch.tensor(mahalanobis_dist, device=self.device_val, dtype=torch.float32)
-                else:
-                    ood_scores = None
-            except Exception as e:
-                print(f"⚠️  OOD detection failed: {e}")
-                ood_scores = None
+                # Store as tensor
+                ood_scores = torch.tensor(mahalanobis_dist, device=self.device_val, dtype=torch.float32)
 
         # Ensure all tensors are on the same device before concatenation
         device = total_zernikes.device
@@ -892,7 +892,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             new = assembleCcdTask.assembleCcd(exposure)
             SubtractBackground = subtractBackground.SubtractBackgroundTask()
             SubtractBackground.run(new)
-        except Exception as e:
+        except (AttributeError, RuntimeError, ValueError) as e:
             print("Warning: switching to no CCD assembly: ", str(e))
             new = exposure
             SubtractBackground = subtractBackground.SubtractBackgroundTask()
