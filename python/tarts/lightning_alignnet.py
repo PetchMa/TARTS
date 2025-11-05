@@ -1,7 +1,7 @@
 """Wrapping everything for WaveNet in Pytorch Lightning."""
 
 # Standard library imports
-from typing import Any, Tuple
+from typing import Any, Dict, Tuple
 
 # Third-party imports
 import pytorch_lightning as pl
@@ -140,7 +140,7 @@ class AlignNetSystem(pl.LightningModule):
         self.camType = "LsstCam"
         self.inputShape = (160, 160)
 
-    def predict_step(self, batch: dict, batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def predict_step(self, batch: Dict[str, Any], batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and return with truth."""
         # unpack data from the dictionary
         img = batch["image"]
@@ -154,7 +154,7 @@ class AlignNetSystem(pl.LightningModule):
 
         return pred_offset, true_offset
 
-    def calc_losses(self, batch: dict, batch_idx: int) -> tuple:
+    def calc_losses(self, batch: Dict[str, Any], batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and calculate the losses.
 
         The two losses considered are:
@@ -179,7 +179,9 @@ class AlignNetSystem(pl.LightningModule):
 
         return loss, mRSSE
 
-    def calc_losses_pure(self, batch: dict, batch_idx: int) -> tuple:
+    def calc_losses_pure(
+        self, batch: Dict[str, Any], batch_idx: int
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Predict Zernikes and calculate the losses.
 
         The two losses considered are:
@@ -202,14 +204,14 @@ class AlignNetSystem(pl.LightningModule):
 
         return loss, mRSSE, pred_offset, true_offset
 
-    def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
+    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Execute training step on a batch."""
         loss, mRSSE = self.calc_losses(batch, batch_idx)
         self.log("train_loss", loss, sync_dist=True, prog_bar=True)
         self.log("train_mRSSE", mRSSE, sync_dist=True)
         return loss
 
-    def validation_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Execute validation step on a batch."""
         loss, mRSSE = self.calc_losses(batch, batch_idx)
         self.log("val_loss", loss, sync_dist=True, prog_bar=True)

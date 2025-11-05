@@ -4,7 +4,7 @@
 import os
 from pathlib import Path
 from random import randint
-from typing import Optional
+from typing import Dict, Optional, Tuple
 import warnings
 
 # Third-party imports
@@ -45,7 +45,7 @@ MAP_DETECTOR_TO_NUMBER = {
 }
 
 
-def safe_yaml_load(file_path: str):
+def safe_yaml_load(file_path: str) -> Dict:
     """Safely load YAML files that may contain Python objects like tuples.
 
     Parameters
@@ -55,7 +55,7 @@ def safe_yaml_load(file_path: str):
 
     Returns
     -------
-    dict
+    Dict
         Loaded YAML content as dictionary
     """
     try:
@@ -405,7 +405,7 @@ def transform_inputs(
     fy: float,
     intra: bool,
     band: int,
-) -> tuple[np.ndarray, float, float, float, float]:
+) -> Tuple[np.ndarray, float, float, float, float]:
     """Transform inputs to the neural network.
 
     Parameters

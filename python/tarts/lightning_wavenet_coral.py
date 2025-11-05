@@ -5,7 +5,7 @@ The method aligns inverse Gram matrices between source and target domains withou
 """
 
 # Standard library imports
-from typing import Tuple
+from typing import Dict, Tuple, Any
 
 # Third-party imports
 import pytorch_lightning as pl
@@ -202,7 +202,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
         return dare_gram_loss
 
-    def predict_step(self, batch: dict, batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def predict_step(self, batch: Dict[str, Any], batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and return with truth."""
         img = batch["image"]
         fx = batch["field_x"]
@@ -250,12 +250,14 @@ class WaveNetSystem_Coral(pl.LightningModule):
         f = -f + 1
         return f
 
-    def calc_losses(self, batch: dict, batch_idx: int, use_coral: bool = False) -> tuple:
+    def calc_losses(
+        self, batch: Dict[str, Any], batch_idx: int, use_coral: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Predict Zernikes and calculate losses with optional DARE-GRAM.
 
         Parameters
         ----------
-        batch: dict
+        batch: Dict[str, Any]
             Batch of training data. If use_coral=True, should contain coral data.
         batch_idx: int
             Batch index.
@@ -323,7 +325,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
         return total_loss, mRSSE, dare_gram_loss
 
-    def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
+    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Execute training step on a batch."""
         loss, mRSSE, dare_gram_loss = self.calc_losses(batch, batch_idx, use_coral=True)
         self.log("train_loss", loss, sync_dist=True, prog_bar=True)
@@ -332,7 +334,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
         return loss
 
-    def validation_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Execute validation step on a batch."""
         # Skip DARE-GRAM during validation for faster evaluation and focus on regression metrics
         loss, mRSSE, dare_gram_loss = self.calc_losses(batch, batch_idx, use_coral=False)

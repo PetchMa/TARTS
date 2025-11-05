@@ -4,7 +4,7 @@
 import glob
 import os
 import pickle
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 # Third-party imports
 import numpy as np
@@ -282,7 +282,7 @@ class Donuts_Fullframe(Dataset):
         transform: bool = True,
         adjustment_factor=0,
         data_dir: str = "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain/",
-        noll_zk: list | None = None,
+        noll_zk: Optional[List[int]] = None,
         coral_filepath: str = "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/coral/",
         coral_mode: bool = False,
         mask_mode: bool = False,
@@ -301,7 +301,7 @@ class Donuts_Fullframe(Dataset):
             RADIAL factor used to shift the image during loading.
         data_dir: str, default=aos_sims
             Location of the data directory.
-        noll_zk: list, default=None
+        noll_zk: Optional[List[int]], default=None
             List of Noll Zernike indices to include in the dataset.
             If None, defaults to [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 27, 28].
         coral_filepath: str, default="/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/coral/"
