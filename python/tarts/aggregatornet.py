@@ -4,11 +4,13 @@ This module implements a transformer-based neural network that aggregates
 predictions from multiple donut images to produce a single, improved estimate
 of Zernike coefficients for the LSST Active Optics System.
 """
+
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
 import torch.nn.functional as F_loss
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+
 # from typing import Tuple  # Unused import
 from .utils import convert_zernikes_deploy
 
@@ -89,9 +91,7 @@ class AggregatorNet(pl.LightningModule):
             dim_feedforward=dim_feedforward,
             batch_first=True,
         )
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_layers
-        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         # final layer to transform to the shape of number of zernikes
         self.fc = nn.Linear(d_model, num_zernikes)
 

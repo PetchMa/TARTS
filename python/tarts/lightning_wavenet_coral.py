@@ -30,7 +30,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
         alpha: float = 0,
         lr: float = 1e-3,
         lr_schedule: bool = False,
-        device: str = 'cuda',
+        device: str = "cuda",
         pretrained: bool = False,
         tradeoff_angle: float = 0.05,
         tradeoff_scale: float = 0.001,
@@ -84,7 +84,9 @@ class WaveNetSystem_Coral(pl.LightningModule):
         self.inputShape = (160, 160)
         self.val_mRSSE = None
 
-    def dare_gram_loss(self, features_source: torch.Tensor, features_target: torch.Tensor) -> torch.Tensor:
+    def dare_gram_loss(
+        self, features_source: torch.Tensor, features_target: torch.Tensor
+    ) -> torch.Tensor:
         """Compute DARE-GRAM loss between source and target features.
 
         Parameters
@@ -179,9 +181,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
         # Compute cosine similarity for angle alignment
         cos_sim = nn.CosineSimilarity(dim=0, eps=1e-6)
         cos_distance = torch.dist(
-            torch.ones(n_features + 1).to(self.device_val),
-            cos_sim(A_pinv, B_pinv),
-            p=1
+            torch.ones(n_features + 1).to(self.device_val), cos_sim(A_pinv, B_pinv), p=1
         ) / (n_features + 1)
 
         # Compute scale alignment loss
@@ -192,16 +192,16 @@ class WaveNetSystem_Coral(pl.LightningModule):
         scale_loss = torch.clamp(scale_loss, min=0.0, max=100.0)
 
         # Combined DARE-GRAM loss
-        dare_gram_loss = self.hparams.tradeoff_angle * cos_distance + self.hparams.tradeoff_scale * scale_loss
+        dare_gram_loss = (
+            self.hparams.tradeoff_angle * cos_distance + self.hparams.tradeoff_scale * scale_loss
+        )
 
         # Final clamp to prevent explosion
         dare_gram_loss = torch.clamp(dare_gram_loss, min=0.0, max=100.0)
 
         return dare_gram_loss
 
-    def predict_step(
-        self, batch: dict, batch_idx: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def predict_step(self, batch: dict, batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and return with truth."""
         img = batch["image"]
         fx = batch["field_x"]
@@ -358,14 +358,9 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
     def get_band_values(self, bands: torch.Tensor) -> torch.Tensor:
         """Retrieve band values for a batch of indices."""
-        band_values = torch.tensor([
-            [0.3671],
-            [0.4827],
-            [0.6223],
-            [0.7546],
-            [0.8691],
-            [0.9712]
-        ]).to(self.device_val)
+        band_values = torch.tensor([[0.3671], [0.4827], [0.6223], [0.7546], [0.8691], [0.9712]]).to(
+            self.device_val
+        )
 
         return band_values[bands]
 

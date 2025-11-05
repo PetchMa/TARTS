@@ -43,9 +43,7 @@ class DonutLoader(pl.LightningDataModule):
         super().__init__()
         self.save_hyperparameters()
 
-    def _build_loader(
-        self, mode: str, shuffle: bool = False, drop_last: bool = True
-    ) -> DataLoader:
+    def _build_loader(self, mode: str, shuffle: bool = False, drop_last: bool = True) -> DataLoader:
         """Build a DataLoader."""
         return DataLoader(
             Donuts(mode=mode, **self.hparams),
@@ -81,7 +79,7 @@ class AlignNetSystem(pl.LightningModule):
         alpha: float = 0,
         lr: float = 1e-3,
         lr_schedule: bool = False,
-        device='cuda',
+        device="cuda",
         pretrained: bool = False,
     ) -> None:
         """Initialize the AlignNet model.
@@ -128,7 +126,7 @@ class AlignNetSystem(pl.LightningModule):
             cnn_model=cnn_model,
             n_predictor_layers=n_predictor_layers,
             device=str(self.device_val),
-            pretrained=pretrained
+            pretrained=pretrained,
         )
 
         # define some parameters that will be accessed by
@@ -136,9 +134,7 @@ class AlignNetSystem(pl.LightningModule):
         self.camType = "LsstCam"
         self.inputShape = (160, 160)
 
-    def predict_step(
-        self, batch: dict, batch_idx: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def predict_step(self, batch: dict, batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and return with truth."""
         # unpack data from the dictionary
         img = batch["image"]
@@ -240,9 +236,9 @@ class AlignNetSystem(pl.LightningModule):
             torch.Tensor: A tensor of shape (batch_size, 1) with band values.
         """
         # Create a tensor with band values
-        band_values = torch.tensor(
-            [[0.3671], [0.4827], [0.6223], [0.7546], [0.8691], [0.9712]]
-        ).to(self.device_val)
+        band_values = torch.tensor([[0.3671], [0.4827], [0.6223], [0.7546], [0.8691], [0.9712]]).to(
+            self.device_val
+        )
 
         return band_values[bands]
 
@@ -281,11 +277,11 @@ class AlignNetSystem(pl.LightningModule):
         data = data - min_vals
         data = data / (max_vals + 1e-8)
         means = data.view(data.shape[0], -1).mean(dim=1)  # shape: [n]
-        stds = data.view(data.shape[0], -1).std(dim=1)    # shape: [n]
+        stds = data.view(data.shape[0], -1).std(dim=1)  # shape: [n]
 
         # Reshape for proper broadcasting with 4D tensor
         means = means.view(-1, 1, 1)  # shape: [n, 1, 1, 1]
-        stds = stds.view(-1, 1, 1)    # shape: [n, 1, 1, 1]
+        stds = stds.view(-1, 1, 1)  # shape: [n, 1, 1, 1]
 
         data = (data - means) / (stds + 1e-8)
         return data

@@ -1,4 +1,5 @@
 """Utility functions."""
+
 import os
 from pathlib import Path
 from random import randint
@@ -7,6 +8,7 @@ import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from torch import nn
+
 # from lsst.summit.utils import ConsDbClient
 
 from .KERNEL import CUTOUT as DONUT
@@ -20,6 +22,7 @@ import warnings
 # Optional imports
 try:
     import git
+
     GIT_AVAILABLE = True
 except ImportError:
     GIT_AVAILABLE = False
@@ -28,14 +31,14 @@ except ImportError:
 LSST_AVAILABLE = True
 
 MAP_DETECTOR_TO_NUMBER = {
-    'R00_SW0': 191,
-    'R00_SW1': 192,
-    'R04_SW0': 195,
-    'R04_SW1': 196,
-    'R40_SW0': 199,
-    'R40_SW1': 200,
-    'R44_SW0': 203,
-    'R44_SW1': 204,
+    "R00_SW0": 191,
+    "R00_SW1": 192,
+    "R04_SW0": 195,
+    "R04_SW1": 196,
+    "R40_SW0": 199,
+    "R40_SW1": 200,
+    "R44_SW0": 203,
+    "R44_SW1": 204,
 }
 
 
@@ -54,21 +57,21 @@ def safe_yaml_load(file_path: str):
     """
     try:
         # First try standard loader
-        with open(file_path, 'r') as f:
+        with open(file_path, "r") as f:
             return yaml.safe_load(f)
     except yaml.YAMLError as e:
         # If that fails, try with FullLoader which can handle more Python objects
         try:
-            with open(file_path, 'r') as f:
+            with open(file_path, "r") as f:
                 return yaml.load(f, Loader=yaml.FullLoader)
         except yaml.YAMLError:
             # If both fail, try to load and fix common issues
-            with open(file_path, 'r') as f:
+            with open(file_path, "r") as f:
                 content = f.read()
 
             # Replace problematic tuple tags with list format
-            content = content.replace('!!python/tuple', '')
-            content = content.replace('tag:yaml.org,2002:python/tuple', '')
+            content = content.replace("!!python/tuple", "")
+            content = content.replace("tag:yaml.org,2002:python/tuple", "")
 
             # Try to load the cleaned content
             try:
@@ -84,12 +87,13 @@ class QuantizationAwareTrainingCallback(pl.Callback):
 
     Allows specifying the model attribute name (e.g., 'alignnet', 'wavenet').
     """
+
     def __init__(
         self,
         model_attr: str = "alignnet",
         start_epoch: int = 5,
         quantization_backend: str = "fbgemm",
-        qconfig_dict: Optional[dict] = None
+        qconfig_dict: Optional[dict] = None,
     ):
         """Initialize the QuantizationAwareTrainingCallback.
 
@@ -127,7 +131,7 @@ class QuantizationAwareTrainingCallback(pl.Callback):
         if self.qconfig_dict:
             for module_name, qconfig in self.qconfig_dict.items():
                 module = model
-                for attr in module_name.split('.'):
+                for attr in module_name.split("."):
                     module = getattr(module, attr)
                 module.qconfig = qconfig
 
@@ -142,12 +146,15 @@ class QuantizationAwareTrainingCallback(pl.Callback):
             model.eval()
             quantized_model = torch.quantization.convert(model)
             quantized_path = f"{trainer.default_root_dir}/quantized_{self.model_attr}_model.pth"
-            torch.save({
-                'model_state_dict': quantized_model.state_dict(),
-                'model_architecture': type(quantized_model).__name__,
-                'quantization_config': self.qconfig_dict,
-                'backend': self.quantization_backend,
-            }, quantized_path)
+            torch.save(
+                {
+                    "model_state_dict": quantized_model.state_dict(),
+                    "model_architecture": type(quantized_model).__name__,
+                    "quantization_config": self.qconfig_dict,
+                    "backend": self.quantization_backend,
+                },
+                quantized_path,
+            )
             print(f"💾 Quantized model saved to: {quantized_path}")
             original_size = sum(p.numel() * 4 for p in model.parameters()) / 1024 / 1024
             print(f"📊 Original model parameters: {original_size:.2f}MB equivalent")
@@ -178,34 +185,36 @@ class LearningRateThresholdCallback(pl.Callback):
             The PyTorch Lightning module being trained.
         """
         # Get current learning rate
-        current_lr = trainer.optimizers[0].param_groups[0]['lr']
+        current_lr = trainer.optimizers[0].param_groups[0]["lr"]
 
         if current_lr < self.threshold:
-            print(f"Learning rate {current_lr:.2e} below threshold {self.threshold:.2e}. Stopping training.")
+            print(
+                f"Learning rate {current_lr:.2e} below threshold {self.threshold:.2e}. Stopping training."
+            )
             trainer.should_stop = True
 
 
 BAND_MAP = {  # type: ignore
-        0: 0.3671,
-        1: 0.4827,
-        2: 0.6223,
-        3: 0.7546,
-        4: 0.8691,
-        5: 0.9712,
-    }
+    0: 0.3671,
+    1: 0.4827,
+    2: 0.6223,
+    3: 0.7546,
+    4: 0.8691,
+    5: 0.9712,
+}
 BAND_str_int = {  # type: ignore
-    'u': 0,
-    'g': 1,
-    'r': 2,
-    'i': 3,
-    'z': 4,
-    'y': 5,
+    "u": 0,
+    "g": 1,
+    "r": 2,
+    "i": 3,
+    "z": 4,
+    "y": 5,
 }
 FIELD = {
-    'R00': {'fieldx': -1.1897, 'fieldy': -1.1897},
-    'R04': {'fieldx': -1.1897, 'fieldy': 1.1897},
-    'R40': {'fieldx': 1.1897, 'fieldy': -1.1897},
-    'R44': {'fieldx': 1.1897, 'fieldy': 1.1897}
+    "R00": {"fieldx": -1.1897, "fieldy": -1.1897},
+    "R04": {"fieldx": -1.1897, "fieldy": 1.1897},
+    "R40": {"fieldx": 1.1897, "fieldy": -1.1897},
+    "R44": {"fieldx": 1.1897, "fieldy": 1.1897},
 }
 
 
@@ -252,9 +261,7 @@ def convert_zernikes(zernikes: torch.Tensor) -> torch.Tensor:
     return zernikes * arcsec_per_micron
 
 
-def convert_zernikes_deploy(
-    zernikes: torch.Tensor, device='cpu'
-) -> torch.Tensor:
+def convert_zernikes_deploy(zernikes: torch.Tensor, device="cpu") -> torch.Tensor:
     """Convert zernike units from microns to quadrature contribution to FWHM.
 
     Parameters
@@ -299,7 +306,7 @@ def convert_zernikes_deploy(
             1.26437424,
             1.26437424,
             0.75241174,
-            0.75241174
+            0.75241174,
         ]
     ).to(zernikes.device)
 
@@ -366,9 +373,7 @@ def count_parameters(model: torch.nn.Module, trainable: bool = True) -> int:
         The number of trainable parameters
     """
     if trainable:
-        return sum(
-            params.numel() for params in model.parameters() if params.requires_grad
-        )
+        return sum(params.numel() for params in model.parameters() if params.requires_grad)
     else:
         return sum(params.numel() for params in model.parameters())
 
@@ -552,13 +557,13 @@ def detect_direction(frame):
     means = torch.tensor([mean_1, mean_2, mean_3, mean_4])
     ind = torch.argmax(means)
     if ind == 0:
-        return 'up'
+        return "up"
     elif ind == 1:
-        return 'left'
+        return "left"
     elif ind == 2:
-        return 'down'
+        return "down"
     else:
-        return 'right'
+        return "right"
 
 
 def shift_offcenter(frame, adjust=0, return_offset=True):
@@ -597,25 +602,25 @@ def shift_offcenter(frame, adjust=0, return_offset=True):
       used for the shift will be discarded.
     """
     direction = detect_direction(frame)
-    if direction == 'left':
+    if direction == "left":
         random_x = randint(-adjust, 0)
         random_y = randint(-adjust, adjust)
-    elif direction == 'right':
+    elif direction == "right":
         random_x = randint(0, adjust)
         random_y = randint(-adjust, adjust)
-    elif direction == 'down':
+    elif direction == "down":
         random_x = randint(-adjust, adjust)
         random_y = randint(-adjust, 0)
     else:
         random_x = randint(-adjust, adjust)
         random_y = randint(0, adjust)
     std, mean, _ = noise_est(frame)
-    backplate = torch.empty(160*3, 160*3).normal_(mean=mean, std=std)
-    backplate[160 + random_y:160*2 + random_y, 160+random_x:160*2+random_x] = frame
+    backplate = torch.empty(160 * 3, 160 * 3).normal_(mean=mean, std=std)
+    backplate[160 + random_y : 160 * 2 + random_y, 160 + random_x : 160 * 2 + random_x] = frame
     if return_offset:
-        return backplate[160:160*2, 160:160*2], [random_x, random_y]
+        return backplate[160 : 160 * 2, 160 : 160 * 2], [random_x, random_y]
     else:
-        return backplate[160:160*2, 160:160*2]
+        return backplate[160 : 160 * 2, 160 : 160 * 2]
 
 
 def batched_crop(image_tensor: torch.Tensor, centers: torch.Tensor, crop_size: int) -> torch.Tensor:
@@ -636,10 +641,9 @@ def batched_crop(image_tensor: torch.Tensor, centers: torch.Tensor, crop_size: i
     top = torch.clamp(centers[:, 1] - crop_size // 2, 0, H - crop_size)
 
     # Use advanced indexing to extract crops
-    crops = torch.stack([
-        image_tensor[:, t:t + crop_size, l:l + crop_size]
-        for t, l in zip(top, left)
-    ])
+    crops = torch.stack(
+        [image_tensor[:, t : t + crop_size, l : l + crop_size] for t, l in zip(top, left)]
+    )
 
     return crops
 
@@ -670,7 +674,7 @@ def get_centers(image: torch.Tensor, crop_size: int) -> torch.Tensor:
     return centers
 
 
-def single_conv(image, device='cuda'):
+def single_conv(image, device="cuda"):
     """Compute signal-to-noise ratio for donut detection using template matching.
 
     Parameters
@@ -694,11 +698,11 @@ def single_conv(image, device='cuda'):
     # donut = np.loadtxt("/home/peterma/research/Rubin_LSST/Rubin_AO_ML/training/extra_template-R22_S11.txt")
     donut = DONUT
     donut = donut[40:200, 40:200].float().to(device)
-    not_donut = (1-donut).bool().float().to(device)
+    not_donut = (1 - donut).bool().float().to(device)
     donut_mean = torch.mean(image * donut)
     not_donut_mean = torch.mean(image * not_donut)
     not_donut_std = torch.std(image * not_donut)
-    sigma_dev = abs(donut_mean-not_donut_mean)/not_donut_std
+    sigma_dev = abs(donut_mean - not_donut_mean) / not_donut_std
     return sigma_dev
 
 
@@ -740,6 +744,7 @@ class CORALLoss(nn.Module):
     This loss function aligns the second-order statistics of source and target
     feature distributions to reduce domain shift.
     """
+
     def __init__(self):
         """Initialize the CORAL loss."""
         super(CORALLoss, self).__init__()
@@ -917,48 +922,70 @@ def getTable(day):
 
 def getzk(row):
     """Get Zernike coefficients."""
-    zk4 = row['z4'].tolist()
-    zk5 = row['z5'].tolist()
-    zk6 = row['z6'].tolist()
-    zk7 = row['z7'].tolist()
-    zk8 = row['z8'].tolist()
-    zk9 = row['z9'].tolist()
-    zk10 = row['z10'].tolist()
-    zk11 = row['z11'].tolist()
-    zk12 = row['z12'].tolist()
-    zk13 = row['z13'].tolist()
-    zk14 = row['z14'].tolist()
-    zk15 = row['z15'].tolist()
-    zk20 = row['z20'].tolist()
-    zk21 = row['z21'].tolist()
-    zk22 = row['z22'].tolist()
-    zk27 = row['z27'].tolist()
-    zk28 = row['z28'].tolist()
-    table_val = np.stack([zk4, zk5, zk6, zk7, zk8, zk9, zk10,
-                          zk11, zk12, zk13, zk14, zk15, zk20, zk21,
-                          zk22, zk27, zk28])
+    zk4 = row["z4"].tolist()
+    zk5 = row["z5"].tolist()
+    zk6 = row["z6"].tolist()
+    zk7 = row["z7"].tolist()
+    zk8 = row["z8"].tolist()
+    zk9 = row["z9"].tolist()
+    zk10 = row["z10"].tolist()
+    zk11 = row["z11"].tolist()
+    zk12 = row["z12"].tolist()
+    zk13 = row["z13"].tolist()
+    zk14 = row["z14"].tolist()
+    zk15 = row["z15"].tolist()
+    zk20 = row["z20"].tolist()
+    zk21 = row["z21"].tolist()
+    zk22 = row["z22"].tolist()
+    zk27 = row["z27"].tolist()
+    zk28 = row["z28"].tolist()
+    table_val = np.stack(
+        [
+            zk4,
+            zk5,
+            zk6,
+            zk7,
+            zk8,
+            zk9,
+            zk10,
+            zk11,
+            zk12,
+            zk13,
+            zk14,
+            zk15,
+            zk20,
+            zk21,
+            zk22,
+            zk27,
+            zk28,
+        ]
+    )
     return table_val
 
 
 def getRealData(butler, cdb_table, ind):
     """Get real data from source."""
     if not LSST_AVAILABLE:
-        raise ImportError("LSST dependencies not available. This function requires LSST installation.")
+        raise ImportError(
+            "LSST dependencies not available. This function requires LSST installation."
+        )
 
-    exposure_id = cdb_table['visit_id'][ind]
-    detector_name = cdb_table['detector'][ind]
+    exposure_id = cdb_table["visit_id"][ind]
+    detector_name = cdb_table["detector"][ind]
     data_id1 = {
-            "instrument": "LSSTCam",  # Replace with your instrument
-            "exposure": int(exposure_id),        # Replace with your exposure ID
-            "detector": detector_name
-            }
+        "instrument": "LSSTCam",  # Replace with your instrument
+        "exposure": int(exposure_id),  # Replace with your exposure ID
+        "detector": detector_name,
+    }
     data_id2 = {
-            "instrument": "LSSTCam",  # Replace with your instrument
-            "exposure": int(exposure_id),        # Replace with your exposure ID
-            "detector": detector_name + 1
-            }
-    data_1 = butler.get('raw', dataId=data_id1, collections="LSSTCam/raw/all")
-    data_2 = butler.get('raw', dataId=data_id2, collections="LSSTCam/raw/all")
-    row = cdb_table[(cdb_table['visit_id'] == exposure_id) & (cdb_table['detector'] == detector_name)]
+        "instrument": "LSSTCam",  # Replace with your instrument
+        "exposure": int(exposure_id),  # Replace with your exposure ID
+        "detector": detector_name + 1,
+    }
+    data_1 = butler.get("raw", dataId=data_id1, collections="LSSTCam/raw/all")
+    data_2 = butler.get("raw", dataId=data_id2, collections="LSSTCam/raw/all")
+    row = cdb_table[
+        (cdb_table["visit_id"] == exposure_id) & (cdb_table["detector"] == detector_name)
+    ]
     zk = getzk(row)
     return (data_1, detector_name, zk), (data_2, detector_name + 1, zk)

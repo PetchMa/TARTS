@@ -45,9 +45,7 @@ class DonutLoader(pl.LightningDataModule):
         self.save_hyperparameters()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def _build_loader(
-        self, mode: str, shuffle: bool = False, drop_last: bool = True
-    ) -> DataLoader:
+    def _build_loader(self, mode: str, shuffle: bool = False, drop_last: bool = True) -> DataLoader:
         """Build a DataLoader."""
         return DataLoader(
             Donuts(mode=mode, **self.hparams),
@@ -105,9 +103,7 @@ class DonutLoader_Fullframe(pl.LightningDataModule):
         super().__init__()
         self.save_hyperparameters()
 
-    def _build_loader(
-        self, mode: str, shuffle: bool = False, drop_last: bool = True
-    ) -> DataLoader:
+    def _build_loader(self, mode: str, shuffle: bool = False, drop_last: bool = True) -> DataLoader:
         """Build a DataLoader."""
         return DataLoader(
             Donuts_Fullframe(mode=mode, **self.hparams),
@@ -144,7 +140,7 @@ class WaveNetSystem(pl.LightningModule):
         alpha: float = 0,
         lr: float = 1e-3,
         lr_schedule: bool = False,
-        device: str = 'cuda',
+        device: str = "cuda",
         pretrained: bool = False,
     ) -> None:
         """Create the WaveNet.
@@ -188,9 +184,7 @@ class WaveNetSystem(pl.LightningModule):
         self.camType = "LsstCam"
         self.inputShape = (160, 160)
 
-    def predict_step(
-        self, batch: dict, batch_idx: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def predict_step(self, batch: dict, batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and return with truth."""
         # unpack data from the dictionary
         img = batch["image"]
@@ -303,14 +297,9 @@ class WaveNetSystem(pl.LightningModule):
             torch.Tensor: A tensor of shape (batch_size, 1) with band values.
         """
         # Create a tensor with band values
-        band_values = torch.tensor([
-            [0.3671],
-            [0.4827],
-            [0.6223],
-            [0.7546],
-            [0.8691],
-            [0.9712]
-        ]).to(self.device_val)
+        band_values = torch.tensor([[0.3671], [0.4827], [0.6223], [0.7546], [0.8691], [0.9712]]).to(
+            self.device_val
+        )
 
         return band_values[bands]
 

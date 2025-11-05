@@ -88,9 +88,7 @@ class Donuts(Dataset):
         # get a list of all the observations
         all_image_files = glob.glob(f"{data_dir}/images/*")
         obs_ids = list(
-            set(
-                [int(file.split("/")[-1].split(".")[1][3:]) for file in all_image_files]
-            )
+            set([int(file.split("/")[-1].split(".")[1][3:]) for file in all_image_files])
         )
 
         # get the table of metadata for each observation
@@ -172,9 +170,7 @@ class Donuts(Dataset):
         pntId, obsId, objId = img_file.split("/")[-1].split(".")[:3]
 
         # get the catalog for this observation
-        catalog = Table.read(
-            f"{self.settings['data_dir']}/catalogs/{pntId}.catalog.parquet"
-        )
+        catalog = Table.read(f"{self.settings['data_dir']}/catalogs/{pntId}.catalog.parquet")
 
         # get the row for this source
         row = catalog[catalog["objectId"] == int(objId[3:])][0]
@@ -186,9 +182,7 @@ class Donuts(Dataset):
         intra = "SW1" in row["detector"]
 
         # get the observed band
-        obs_row = self.observations[
-            self.observations["observationId"] == int(obsId[3:])
-        ]
+        obs_row = self.observations[self.observations["observationId"] == int(obsId[3:])]
         band = "ugrizy".index(obs_row["lsstFilter"].item())
 
         # load the zernikes
@@ -197,7 +191,7 @@ class Donuts(Dataset):
                 f"{self.settings['data_dir']}/zernikes/"
                 f"{pntId}.{obsId}.detector{row['detector'][:3]}.zernikes.npy"
             ),
-            allow_pickle=True
+            allow_pickle=True,
         )
 
         # load the degrees of freedom
@@ -220,10 +214,7 @@ class Donuts(Dataset):
             img, adjust=self.adjustment_factor, return_offset=True
         )
         # track the offset vector and renormalise the vector amount
-        offset_vec = (
-            np.array(np.array(offset_amount).astype(np.float32))
-            / self.adjustment_factor
-        )
+        offset_vec = np.array(np.array(offset_amount).astype(np.float32)) / self.adjustment_factor
         # compute the radial offset factor (vector norm)
         offset_r = np.sqrt(offset_amount[0] ** 2 + offset_amount[1] ** 2)
         offset_r = np.array(offset_r.astype(np.float32))[None] / self.adjustment_factor
@@ -328,9 +319,9 @@ class Donuts_Fullframe(Dataset):
             "data_dir": data_dir,
         }
         if self.settings["mode"] == "train":
-            self.image_dir = data_dir + '/train'
+            self.image_dir = data_dir + "/train"
         if self.settings["mode"] == "val":
-            self.image_dir = data_dir + '/val'
+            self.image_dir = data_dir + "/val"
         self.mask_mode = mask_mode
         self.image_files = []
         # Loop through all files and subdirectories
@@ -346,9 +337,9 @@ class Donuts_Fullframe(Dataset):
             # Use a temporary variable to avoid modifying the original path
             coral_data_path = coral_filepath
             if self.settings["mode"] == "train":
-                coral_data_path += '/train'
+                coral_data_path += "/train"
             if self.settings["mode"] == "val":
-                coral_data_path += '/val'
+                coral_data_path += "/val"
             for root, _, files in os.walk(coral_data_path):
                 for file in files:
                     file_path = os.path.join(root, file)
@@ -359,7 +350,7 @@ class Donuts_Fullframe(Dataset):
 
             self.image_files = self.image_files[: int(0.5 * len(self.image_files))]
 
-        self.noll_zk = np.array(noll_zk)-4
+        self.noll_zk = np.array(noll_zk) - 4
         self.adjustment_factor = adjustment_factor
 
     def __len__(self) -> int:
@@ -525,8 +516,7 @@ class Donuts_Fullframe(Dataset):
             )
             # Add offset information to output
             offset_vec = (
-                np.array(np.array(offset_amount).astype(np.float32))
-                / self.adjustment_factor
+                np.array(np.array(offset_amount).astype(np.float32)) / self.adjustment_factor
             )
             offset_r = np.sqrt(offset_amount[0] ** 2 + offset_amount[1] ** 2)
             offset_r = np.array(offset_r.astype(np.float32)) / self.adjustment_factor
@@ -640,9 +630,9 @@ class zernikeDataset(Dataset):
         self.max_seq_length = seq_length
         # Loop through all files and subdirectories
         if train:
-            self.image_dir = data_dir + '/train'
+            self.image_dir = data_dir + "/train"
         else:
-            self.image_dir = data_dir + '/train'
+            self.image_dir = data_dir + "/train"
 
         self.filename = []
         for root, _, files in os.walk(self.image_dir):
@@ -653,7 +643,7 @@ class zernikeDataset(Dataset):
         if train:
             self.filename = self.filename[: int(0.8 * len(self.filename))]
         else:
-            self.filename = self.filename[int(0.8 * len(self.filename)):]
+            self.filename = self.filename[int(0.8 * len(self.filename)) :]
 
         self.num_samples = len(self.filename)
         self.alpha = alpha
@@ -727,7 +717,7 @@ class zernikeDataset(Dataset):
         position = torch.concatenate([field_x, field_y], axis=-1).to(self.device)
         # combine all into one array as an embedding
         # Remove singleton dimension for correct concatenation
-        x = x.squeeze(1)           # [seq_length, 25]
+        x = x.squeeze(1)  # [seq_length, 25]
         position = position.squeeze(1)  # [seq_length, 2]
         x_total = torch.cat([x, position, snr], dim=1)
         # control padding the sequence
@@ -736,9 +726,9 @@ class zernikeDataset(Dataset):
         if x_total.shape[0] > self.max_seq_length:
             x_total = x_total[: self.max_seq_length, :]
         else:
-            padding = torch.zeros(
-                (self.max_seq_length - x_total.shape[0], x_total.shape[1])
-            ).to(self.device)
+            padding = torch.zeros((self.max_seq_length - x_total.shape[0], x_total.shape[1])).to(
+                self.device
+            )
             x_total = torch.cat([x_total, padding], axis=0).to(self.device).float()
         y = loaded_data["zk_true"]
         # return the stack of embedings, mean zernike estimate and the true zernike in PSF

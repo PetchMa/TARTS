@@ -5,12 +5,19 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        exclude: conda-recipe/meta.yaml
+
+  - repo: https://github.com/psf/black
+    rev: 24.1.1
+    hooks:
+      - id: black
+        language_version: python3
 
   - repo: https://github.com/PyCQA/flake8
     rev: 6.1.0
     hooks:
       - id: flake8
-        args: [--max-line-length=1210, --exclude=__init__.py]
+        args: [--max-line-length=1210, --extend-ignore=E203, --exclude=__init__.py]
 
   - repo: https://github.com/PyCQA/pydocstyle
     rev: 6.3.0

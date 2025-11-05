@@ -1,8 +1,12 @@
 """Neural network to predict zernike coefficients from donut images and positions."""
-from .utils import (batched_crop, get_centers,
-                    convert_zernikes_deploy, single_conv,
-                    shift_offcenter,
-                    )
+
+from .utils import (
+    batched_crop,
+    get_centers,
+    convert_zernikes_deploy,
+    single_conv,
+    shift_offcenter,
+)
 import torch
 from torch import nn
 from .lightning_wavenet import WaveNetSystem
@@ -26,10 +30,20 @@ from .utils import MAP_DETECTOR_TO_NUMBER
 
 class NeuralActiveOpticsSys(pl.LightningModule):
     """Transfer learning driven WaveNet."""
-    def __init__(self, dataset_params, wavenet_path=None, alignet_path=None,
-                 aggregatornet_path=None,
-                 lr=1e-3, final_layer=None, aggregator_on=True, pretrained=True,
-                 compile_models=False, ood_model_path=None) -> None:
+
+    def __init__(
+        self,
+        dataset_params,
+        wavenet_path=None,
+        alignet_path=None,
+        aggregatornet_path=None,
+        lr=1e-3,
+        final_layer=None,
+        aggregator_on=True,
+        pretrained=True,
+        compile_models=False,
+        ood_model_path=None,
+    ) -> None:
         """Initialize the Neural Active Optics System.
 
         Parameters
@@ -72,8 +86,10 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             try:
                 print(f"Loading OOD detection model from {ood_model_path}...")
                 ood_data = joblib.load(ood_model_path)
-                self.ood_model = ood_data['cov_model']
-                self.ood_mean = torch.tensor(ood_data['mean'], device=self.device_val, dtype=torch.float32)
+                self.ood_model = ood_data["cov_model"]
+                self.ood_mean = torch.tensor(
+                    ood_data["mean"], device=self.device_val, dtype=torch.float32
+                )
                 print("✅ OOD detection model loaded successfully")
             except Exception as e:
                 print(f"⚠️  Failed to load OOD model: {e}")
@@ -83,7 +99,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             print("   Continuing without OOD detection...")
 
         # Load parameters from YAML file once
-        with open(dataset_params, 'r') as yaml_file:
+        with open(dataset_params, "r") as yaml_file:
             params = yaml.safe_load(yaml_file)
 
         if wavenet_path is None:
@@ -91,8 +107,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         else:
             # Always use checkpoint loading - the pretrained parameter doesn't matter when loading from checkpoint
             self.wavenet_model = WaveNetSystem.load_from_checkpoint(
-                wavenet_path,
-                map_location=str(self.device_val)
+                wavenet_path, map_location=str(self.device_val)
             ).to(self.device_val)
 
         if alignet_path is None:
@@ -101,15 +116,17 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             try:
                 # Always use checkpoint loading - the pretrained parameter doesn't matter when loading from checkpoint
                 self.alignnet_model = AlignNetSystem.load_from_checkpoint(
-                    alignet_path,
-                    map_location=str(self.device_val)
+                    alignet_path, map_location=str(self.device_val)
                 ).to(self.device_val)
                 print("✅ Loaded AlignNet regular checkpoint")
             except Exception:
                 print("⚠️  Regular AlignNet loading failed")
                 print("🔄 Trying to load AlignNet as QAT-trained model...")
                 from training.load_qat_model import load_qat_trained_model
-                self.alignnet_model = load_qat_trained_model(alignet_path, device=str(self.device_val)).to(self.device_val)
+
+                self.alignnet_model = load_qat_trained_model(
+                    alignet_path, device=str(self.device_val)
+                ).to(self.device_val)
                 print("✅ Loaded AlignNet QAT-trained model")
 
         self.max_seq_length = params["max_seq_len"]
@@ -120,13 +137,17 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             nhead = params["aggregator_model"]["nhead"]
             num_layers = params["aggregator_model"]["num_layers"]
             dim_feedforward = params["aggregator_model"]["dim_feedforward"]
-            self.aggregatornet_model = AggregatorNet(d_model=d_model,
-                                                     nhead=nhead,
-                                                     num_layers=num_layers,
-                                                     dim_feedforward=dim_feedforward,
-                                                     max_seq_length=self.max_seq_length).to(self.device_val)
+            self.aggregatornet_model = AggregatorNet(
+                d_model=d_model,
+                nhead=nhead,
+                num_layers=num_layers,
+                dim_feedforward=dim_feedforward,
+                max_seq_length=self.max_seq_length,
+            ).to(self.device_val)
         else:
-            self.aggregatornet_model = AggregatorNet.load_from_checkpoint(aggregatornet_path).to(self.device_val)
+            self.aggregatornet_model = AggregatorNet.load_from_checkpoint(aggregatornet_path).to(
+                self.device_val
+            )
 
         if final_layer is not None:
             layers = [
@@ -138,17 +159,17 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             self.final_layer = self.identity
 
         # Use already loaded params
-        self.refinements = params['refinements']
-        self.CROP_SIZE = params['CROP_SIZE']
-        self.mm_pix = params['mm_pix']
-        self.deg_per_pix = params['deg_per_pix']
-        self.alpha = params['alpha']
-        self.SCALE = params['adjustment_AlignNet']
+        self.refinements = params["refinements"]
+        self.CROP_SIZE = params["CROP_SIZE"]
+        self.mm_pix = params["mm_pix"]
+        self.deg_per_pix = params["deg_per_pix"]
+        self.alpha = params["alpha"]
+        self.SCALE = params["adjustment_AlignNet"]
 
         # Apply torch.compile to submodels if requested
         if compile_models:
             # Determine compilation backend based on device
-            if self.device_val.type == 'cpu':
+            if self.device_val.type == "cpu":
                 compile_backend = "inductor"
                 print("🔧 Compiling submodels with torch.compile (CPU backend: inductor)...")
             else:
@@ -168,7 +189,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 print(f"⚠️  AlignNet compilation failed: {e}")
 
             try:
-                self.aggregatornet_model = torch.compile(self.aggregatornet_model, backend=compile_backend)
+                self.aggregatornet_model = torch.compile(
+                    self.aggregatornet_model, backend=compile_backend
+                )
                 print(f"✅ AggregatorNet compiled with backend: {compile_backend or 'default'}")
             except Exception as e:
                 print(f"⚠️  AggregatorNet compilation failed: {e}")
@@ -185,7 +208,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         Automatically selects the appropriate backend based on the device (CPU: inductor, GPU: default).
         """
         # Determine compilation backend based on device
-        if self.device_val.type == 'cpu':
+        if self.device_val.type == "cpu":
             compile_backend = "inductor"
             print("🔧 Compiling submodels with torch.compile (CPU backend: inductor)...")
         else:
@@ -205,7 +228,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             print(f"⚠️  AlignNet compilation failed: {e}")
 
         try:
-            self.aggregatornet_model = torch.compile(self.aggregatornet_model, backend=compile_backend)
+            self.aggregatornet_model = torch.compile(
+                self.aggregatornet_model, backend=compile_backend
+            )
             print(f"✅ AggregatorNet compiled with backend: {compile_backend or 'default'}")
         except Exception as e:
             print(f"⚠️  AggregatorNet compilation failed: {e}")
@@ -235,25 +260,29 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         internal_data = []
 
         # Check if we have valid data (not NaN-filled)
-        if hasattr(self, 'fx') and len(self.fx) > 0 and not torch.isnan(self.fx[0]):
+        if hasattr(self, "fx") and len(self.fx) > 0 and not torch.isnan(self.fx[0]):
             num_donuts = len(self.fx)
 
             for i in range(num_donuts):
                 data_dict = {
-                    'cropped_image': self.cropped_image[i].clone().detach(),
-                    'fx': self.fx[i].clone().detach(),
-                    'fy': self.fy[i].clone().detach(),
-                    'intra': self.intra[i].clone().detach(),
-                    'band': self.band[i].clone().detach(),
-                    'SNR': self.SNR[i].clone().detach(),
-                    'centers': self.centers[i].clone().detach(),
-                    'zernikes': self.total_zernikes[i].clone().detach()
+                    "cropped_image": self.cropped_image[i].clone().detach(),
+                    "fx": self.fx[i].clone().detach(),
+                    "fy": self.fy[i].clone().detach(),
+                    "intra": self.intra[i].clone().detach(),
+                    "band": self.band[i].clone().detach(),
+                    "SNR": self.SNR[i].clone().detach(),
+                    "centers": self.centers[i].clone().detach(),
+                    "zernikes": self.total_zernikes[i].clone().detach(),
                 }
                 # Add OOD score if available
-                if hasattr(self, 'ood_scores') and self.ood_scores is not None and i < len(self.ood_scores):
-                    data_dict['ood_score'] = self.ood_scores[i].clone().detach()
+                if (
+                    hasattr(self, "ood_scores")
+                    and self.ood_scores is not None
+                    and i < len(self.ood_scores)
+                ):
+                    data_dict["ood_score"] = self.ood_scores[i].clone().detach()
                 else:
-                    data_dict['ood_score'] = None
+                    data_dict["ood_score"] = None
 
                 internal_data.append(data_dict)
 
@@ -305,7 +334,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             Converted Zernike coefficients in proper format.
         """
         # Use the device from the data tensor to ensure compatibility
-        device_str = 'cpu' if data.device.type == 'cpu' else 'cuda'
+        device_str = "cpu" if data.device.type == "cpu" else "cuda"
         return convert_zernikes_deploy(data, device=device_str)
 
     def convert_zernike_batched(self, data):
@@ -371,17 +400,25 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         """
         centers = get_centers(image[0, 0, :, :], self.CROP_SIZE).to(self.device_val)
         cropped_image = batched_crop(image[:, 0, :, :], centers, crop_size=self.CROP_SIZE).float()
-        fx, fy, intra, band = fx.clone()[0, :, :].float(), fy.clone()[0, :, :].float(), intra.clone()[0, :, :].float(), band.clone()[0, :, :].int()
+        fx, fy, intra, band = (
+            fx.clone()[0, :, :].float(),
+            fy.clone()[0, :, :].float(),
+            intra.clone()[0, :, :].float(),
+            band.clone()[0, :, :].int(),
+        )
 
         for n in range(self.refinements):
-            pixel_shifts = self.alignnet_model(cropped_image[:, 0, :, :],
-                                               fx.clone(),
-                                               fy.clone(), intra.clone(),
-                                               band.clone()) * self.SCALE
+            pixel_shifts = (
+                self.alignnet_model(
+                    cropped_image[:, 0, :, :], fx.clone(), fy.clone(), intra.clone(), band.clone()
+                )
+                * self.SCALE
+            )
             centers += pixel_shifts.int()
 
-            cropped_image = batched_crop(image[0, :, :, :].float(),
-                                         centers, crop_size=self.CROP_SIZE)
+            cropped_image = batched_crop(
+                image[0, :, :, :].float(), centers, crop_size=self.CROP_SIZE
+            )
 
             fx += pixel_shifts[:, 0][..., None].int().float() * self.deg_per_pix
             fy += pixel_shifts[:, 1][..., None].int().float() * self.deg_per_pix
@@ -432,16 +469,22 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         centers = get_centers(image[0, 0, :, :], self.CROP_SIZE).to(self.device_val)
         cropped_image = batched_crop(image[:, 0, :, :], centers, crop_size=self.CROP_SIZE).float()
 
-        fx, fy, intra, band = fx.clone()[0, :, :].float(), fy.clone()[0, :, :].float(), intra.clone()[0, :, :].float(), band.clone()[0, :, :].int()
+        fx, fy, intra, band = (
+            fx.clone()[0, :, :].float(),
+            fy.clone()[0, :, :].float(),
+            intra.clone()[0, :, :].float(),
+            band.clone()[0, :, :].int(),
+        )
 
-        pixel_shifts = self.alignnet_model(
-            cropped_image[:, 0, :, :], fx.clone(), fy.clone(), intra.clone(), band.clone()
-        ) * self.SCALE
+        pixel_shifts = (
+            self.alignnet_model(
+                cropped_image[:, 0, :, :], fx.clone(), fy.clone(), intra.clone(), band.clone()
+            )
+            * self.SCALE
+        )
         centers += pixel_shifts.int()
 
-        cropped_image = batched_crop(
-            image[0, :, :, :].float(), centers, crop_size=self.CROP_SIZE
-        )
+        cropped_image = batched_crop(image[0, :, :, :].float(), centers, crop_size=self.CROP_SIZE)
 
         fx += pixel_shifts[:, 0][..., None].int().float() * self.deg_per_pix
         fy += pixel_shifts[:, 1][..., None].int().float() * self.deg_per_pix
@@ -467,7 +510,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             self.SNR = [torch.tensor(0)]
             self.centers = [torch.tensor([0, 0])]
             self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
-            self.cropped_image = torch.zeros((1, self.CROP_SIZE, self.CROP_SIZE), device=self.device_val)
+            self.cropped_image = torch.zeros(
+                (1, self.CROP_SIZE, self.CROP_SIZE), device=self.device_val
+            )
             self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
             self.ood_scores = None
             return torch.zeros((1, num_zernikes), device=self.device_val)
@@ -479,16 +524,19 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         intra = intra[keep_ind]
         band = band[keep_ind]
         SNR = SNR[keep_ind]
-        total_zernikes = self.wavenet_model(cropped_image[:, 0, :, :], fx.clone(), fy.clone(),
-                                            intra.clone(), band.clone())
-        total_zernikes = total_zernikes/1000
+        total_zernikes = self.wavenet_model(
+            cropped_image[:, 0, :, :], fx.clone(), fy.clone(), intra.clone(), band.clone()
+        )
+        total_zernikes = total_zernikes / 1000
 
         # Compute OOD scores if OOD model is available
         ood_scores = None
-        if self.ood_model is not None and hasattr(self.wavenet_model.wavenet, 'predictor_features'):
+        if self.ood_model is not None and hasattr(self.wavenet_model.wavenet, "predictor_features"):
             try:
                 # Get predictor penultimate features and detach/convert to CPU for numpy
-                penultimate = self.wavenet_model.wavenet.predictor_features  # Shape: (batch_size, n_features)
+                penultimate = (
+                    self.wavenet_model.wavenet.predictor_features
+                )  # Shape: (batch_size, n_features)
 
                 # Detach from computation graph and move to CPU for numpy conversion
                 features_np = penultimate.detach().cpu().numpy()
@@ -496,7 +544,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                     features_centered = features_np - self.ood_mean.cpu().numpy()
                     mahalanobis_dist = self.ood_model.mahalanobis(features_centered)
                     # Store as tensor
-                    ood_scores = torch.tensor(mahalanobis_dist, device=self.device_val, dtype=torch.float32)
+                    ood_scores = torch.tensor(
+                        mahalanobis_dist, device=self.device_val, dtype=torch.float32
+                    )
                 else:
                     ood_scores = None
             except Exception as e:
@@ -530,19 +580,17 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         position = torch.cat([fx, fy], dim=-1)
 
         # Concatenate features in the same order as training data: [zernikes, position, snr]
-        embedded_features = torch.cat([
-            total_zernikes,
-            position,
-            SNR_normalized
-        ], dim=1)
+        embedded_features = torch.cat([total_zernikes, position, SNR_normalized], dim=1)
 
         if embedded_features.shape[0] > self.max_seq_length:
-            embedded_features = embedded_features[:self.max_seq_length, :]
+            embedded_features = embedded_features[: self.max_seq_length, :]
         else:
-            padding = torch.zeros((self.max_seq_length - embedded_features.shape[0],
-                                   embedded_features.shape[1])).to(self.device_val)
-            embedded_features = torch.cat([embedded_features,
-                                           padding], axis=0).to(self.device_val).float()
+            padding = torch.zeros(
+                (self.max_seq_length - embedded_features.shape[0], embedded_features.shape[1])
+            ).to(self.device_val)
+            embedded_features = (
+                torch.cat([embedded_features, padding], axis=0).to(self.device_val).float()
+            )
 
         embedded_features = embedded_features[None, ...]
 
@@ -609,16 +657,22 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         centers = get_centers(image[0, 0, :, :], self.CROP_SIZE).to(self.device_val)
         cropped_image = batched_crop(image[:, 0, :, :], centers, crop_size=self.CROP_SIZE).float()
 
-        fx, fy, intra, band = fx.clone()[0, :, :].float(), fy.clone()[0, :, :].float(), intra.clone()[0, :, :].float(), band.clone()[0, :, :].int()
+        fx, fy, intra, band = (
+            fx.clone()[0, :, :].float(),
+            fy.clone()[0, :, :].float(),
+            intra.clone()[0, :, :].float(),
+            band.clone()[0, :, :].int(),
+        )
 
-        pixel_shifts = self.alignnet_model(
-            cropped_image[:, 0, :, :], fx.clone(), fy.clone(), intra.clone(), band.clone()
-        ) * self.SCALE
+        pixel_shifts = (
+            self.alignnet_model(
+                cropped_image[:, 0, :, :], fx.clone(), fy.clone(), intra.clone(), band.clone()
+            )
+            * self.SCALE
+        )
         centers += pixel_shifts.int()
 
-        cropped_image = batched_crop(
-            image[0, :, :, :].float(), centers, crop_size=self.CROP_SIZE
-        )
+        cropped_image = batched_crop(image[0, :, :, :].float(), centers, crop_size=self.CROP_SIZE)
 
         fx += pixel_shifts[:, 0][..., None].int().float() * self.deg_per_pix
         fy += pixel_shifts[:, 1][..., None].int().float() * self.deg_per_pix
@@ -638,22 +692,27 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         # Apply random shifts to cropped images before WaveNet
         shifted_images = []
         for i in range(cropped_image.shape[0]):
-            shifted_img = shift_offcenter(cropped_image[i, 0, :, :], adjust=shift_amount, return_offset=False)
+            shifted_img = shift_offcenter(
+                cropped_image[i, 0, :, :], adjust=shift_amount, return_offset=False
+            )
             shifted_images.append(shifted_img)
 
         # Stack shifted images back into a batch
         shifted_cropped_image = torch.stack(shifted_images, dim=0)
 
-        total_zernikes = self.wavenet_model(shifted_cropped_image, fx.clone(), fy.clone(),
-                                            intra.clone(), band.clone())
-        total_zernikes = total_zernikes/1000
+        total_zernikes = self.wavenet_model(
+            shifted_cropped_image, fx.clone(), fy.clone(), intra.clone(), band.clone()
+        )
+        total_zernikes = total_zernikes / 1000
 
         # Compute OOD scores if OOD model is available
         ood_scores = None
-        if self.ood_model is not None and hasattr(self.wavenet_model.wavenet, 'predictor_features'):
+        if self.ood_model is not None and hasattr(self.wavenet_model.wavenet, "predictor_features"):
             try:
                 # Get predictor penultimate features and detach/convert to CPU for numpy
-                penultimate = self.wavenet_model.wavenet.predictor_features  # Shape: (batch_size, n_features)
+                penultimate = (
+                    self.wavenet_model.wavenet.predictor_features
+                )  # Shape: (batch_size, n_features)
 
                 # Detach from computation graph and move to CPU for numpy conversion
                 features_np = penultimate.detach().cpu().numpy()
@@ -662,7 +721,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                     mahalanobis_dist = self.ood_model.mahalanobis(features_centered)
 
                     # Store as tensor
-                    ood_scores = torch.tensor(mahalanobis_dist, device=self.device_val, dtype=torch.float32)
+                    ood_scores = torch.tensor(
+                        mahalanobis_dist, device=self.device_val, dtype=torch.float32
+                    )
                 else:
                     ood_scores = None
             except Exception as e:
@@ -689,19 +750,17 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         position = torch.cat([fx, fy], dim=-1)
 
         # Concatenate features in the same order as training data: [zernikes, position, snr]
-        embedded_features = torch.cat([
-            total_zernikes,
-            position,
-            SNR_normalized
-        ], dim=1)
+        embedded_features = torch.cat([total_zernikes, position, SNR_normalized], dim=1)
 
         if embedded_features.shape[0] > self.max_seq_length:
-            embedded_features = embedded_features[:self.max_seq_length, :]
+            embedded_features = embedded_features[: self.max_seq_length, :]
         else:
-            padding = torch.zeros((self.max_seq_length - embedded_features.shape[0],
-                                   embedded_features.shape[1])).to(self.device_val)
-            embedded_features = torch.cat([embedded_features,
-                                           padding], axis=0).to(self.device_val).float()
+            padding = torch.zeros(
+                (self.max_seq_length - embedded_features.shape[0], embedded_features.shape[1])
+            ).to(self.device_val)
+            embedded_features = (
+                torch.cat([embedded_features, padding], axis=0).to(self.device_val).float()
+            )
 
         embedded_features = embedded_features[None, ...]
 
@@ -832,28 +891,28 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             SubtractBackground.run(new)
         image = new.getImage().array
         header = exposure.metadata
-        filter_name = header['FILTER']
+        filter_name = header["FILTER"]
         if detectorName is None:
-            full_detectorName = header['RAFTBAY'] + '_' + header['CCDSLOT']
+            full_detectorName = header["RAFTBAY"] + "_" + header["CCDSLOT"]
             detectorName = MAP_DETECTOR_TO_NUMBER[full_detectorName]
         #  U G R I Z Y
-        if 'u' in filter_name:
+        if "u" in filter_name:
             filter_name = torch.tensor([0])
-        elif 'g' in filter_name:
+        elif "g" in filter_name:
             filter_name = torch.tensor([1])
-        elif 'r' in filter_name:
+        elif "r" in filter_name:
             filter_name = torch.tensor([2])
-        elif 'i' in filter_name:
+        elif "i" in filter_name:
             filter_name = torch.tensor([3])
-        elif 'z' in filter_name:
+        elif "z" in filter_name:
             filter_name = torch.tensor([4])
-        elif 'y' in filter_name:
+        elif "y" in filter_name:
             filter_name = torch.tensor([5])
 
         # check if intra or extra
-        if header['CCDSLOT'][2:] == '1':
+        if header["CCDSLOT"][2:] == "1":
             focal = torch.tensor([0]).float()
-        elif header['CCDSLOT'][2:] == '0':
+        elif header["CCDSLOT"][2:] == "0":
             focal = torch.tensor([1]).float()
 
         centers = get_centers(image, self.CROP_SIZE)
@@ -865,7 +924,12 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         field_coords = []
         for x, y in centers:
             coord = camera_transforms.ccdPixelToFocalMm(x, y, detectorName=detectorName)
-            field_coords.append([coord[0] / self.mm_pix * self.deg_per_pix, coord[1] / self.mm_pix * self.deg_per_pix])
+            field_coords.append(
+                [
+                    coord[0] / self.mm_pix * self.deg_per_pix,
+                    coord[1] / self.mm_pix * self.deg_per_pix,
+                ]
+            )
 
         field_coords = torch.tensor(field_coords, dtype=torch.float32)
         field_x = field_coords[:, 0].unsqueeze(1).to(self.device_val)[None, ...]
@@ -916,27 +980,27 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         SubtractBackground.run(new)
         image = new.getImage().array
         header = exposure.metadata
-        filter_name = header['FILTER']
+        filter_name = header["FILTER"]
         if detectorName is None:
-            detectorName = header['CHIPID']
+            detectorName = header["CHIPID"]
         #  U G R I Z Y
-        if 'u' in filter_name:
+        if "u" in filter_name:
             filter_name = torch.tensor([0])
-        elif 'g' in filter_name:
+        elif "g" in filter_name:
             filter_name = torch.tensor([1])
-        elif 'r' in filter_name:
+        elif "r" in filter_name:
             filter_name = torch.tensor([2])
-        elif 'i' in filter_name:
+        elif "i" in filter_name:
             filter_name = torch.tensor([3])
-        elif 'z' in filter_name:
+        elif "z" in filter_name:
             filter_name = torch.tensor([4])
-        elif 'y' in filter_name:
+        elif "y" in filter_name:
             filter_name = torch.tensor([5])
 
         # check if intra or extra
-        if header['CCDSLOT'][2:] == '1':
+        if header["CCDSLOT"][2:] == "1":
             focal = torch.tensor([0]).float()
-        elif header['CCDSLOT'][2:] == '0':
+        elif header["CCDSLOT"][2:] == "0":
             focal = torch.tensor([1]).float()
 
         centers = get_centers(image, self.CROP_SIZE)
@@ -948,7 +1012,12 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         field_coords = []
         for x, y in centers:
             coord = camera_transforms.ccdPixelToFocalMm(x, y, detectorName=detectorName)
-            field_coords.append([coord[0] / self.mm_pix * self.deg_per_pix, coord[1] / self.mm_pix * self.deg_per_pix])
+            field_coords.append(
+                [
+                    coord[0] / self.mm_pix * self.deg_per_pix,
+                    coord[1] / self.mm_pix * self.deg_per_pix,
+                ]
+            )
 
         field_coords = torch.tensor(field_coords, dtype=torch.float32)
         field_x = field_coords[:, 0].unsqueeze(1).to(self.device_val)[None, ...]
@@ -960,7 +1029,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         image_tensor = F.to_tensor(image)[None, ...]
         with torch.no_grad():
-            pred = self.forward_shifts(image_tensor, field_x, field_y, focal_val, band_val, shift_amount)
+            pred = self.forward_shifts(
+                image_tensor, field_x, field_y, focal_val, band_val, shift_amount
+            )
         return pred
 
     def deploy_detect(self, exposure, detectorName=None):
@@ -994,27 +1065,27 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         SubtractBackground.run(new)
         image = new.getImage().array
         header = exposure.metadata
-        filter_name = header['FILTER']
+        filter_name = header["FILTER"]
         if detectorName is None:
-            detectorName = header['CHIPID']
+            detectorName = header["CHIPID"]
         #  U G R I Z Y
-        if 'u' in filter_name:
+        if "u" in filter_name:
             filter_name = torch.tensor([0])
-        elif 'g' in filter_name:
+        elif "g" in filter_name:
             filter_name = torch.tensor([1])
-        elif 'r' in filter_name:
+        elif "r" in filter_name:
             filter_name = torch.tensor([2])
-        elif 'i' in filter_name:
+        elif "i" in filter_name:
             filter_name = torch.tensor([3])
-        elif 'z' in filter_name:
+        elif "z" in filter_name:
             filter_name = torch.tensor([4])
-        elif 'y' in filter_name:
+        elif "y" in filter_name:
             filter_name = torch.tensor([5])
 
         # check if intra or extra
-        if header['CCDSLOT'][2:] == '1':
+        if header["CCDSLOT"][2:] == "1":
             focal = torch.tensor([0]).float()
-        elif header['CCDSLOT'][2:] == '0':
+        elif header["CCDSLOT"][2:] == "0":
             focal = torch.tensor([1]).float()
 
         centers = get_centers(image, self.CROP_SIZE)
@@ -1026,7 +1097,12 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         field_coords = []
         for x, y in centers:
             coord = camera_transforms.ccdPixelToFocalMm(x, y, detectorName=detectorName)
-            field_coords.append([coord[0] / self.mm_pix * self.deg_per_pix, coord[1] / self.mm_pix * self.deg_per_pix])
+            field_coords.append(
+                [
+                    coord[0] / self.mm_pix * self.deg_per_pix,
+                    coord[1] / self.mm_pix * self.deg_per_pix,
+                ]
+            )
 
         field_coords = torch.tensor(field_coords, dtype=torch.float32)
         field_x = field_coords[:, 0].unsqueeze(1).to(self.device_val)[None, ...]
@@ -1038,5 +1114,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         image_tensor = F.to_tensor(image)[None, ...]
         with torch.no_grad():
-            aligned_images = self.forward_align(image_tensor.to(self.device_val), field_x, field_y, focal_val, band_val)
+            aligned_images = self.forward_align(
+                image_tensor.to(self.device_val), field_x, field_y, focal_val, band_val
+            )
         return aligned_images

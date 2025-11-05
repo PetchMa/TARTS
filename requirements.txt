@@ -28,6 +28,8 @@ asttokens
 async-lru==2.0.4
 attrs
 autograd
+black
+pre-commit
 aws-xray-sdk
 babel==2.16.0
 backoff
