@@ -4,7 +4,7 @@
 import glob
 import os
 import pickle
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Third-party imports
 import numpy as np
@@ -370,7 +370,7 @@ class Donuts_Fullframe(Dataset):
         for attempt in range(max_retries):
             try:
                 # Re-check availability in case files were deleted
-                if len(self.coral_image_files) == 0:
+                if not self.coral_image_files:
                     raise RuntimeError("All coral image files have been removed due to corruption.")
 
                 idx = np.random.randint(0, len(self.coral_image_files))
@@ -646,11 +646,11 @@ class zernikeDataset(Dataset):
         self.return_true = return_true
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def __len__(self):
+    def __len__(self) -> int:
         """Return the number of samples in the dataset."""
         return self.num_samples
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Retrieve and process a single sample from the dataset at the specified index.
 
         This method loads a data sample from the file at the given index,
@@ -692,9 +692,8 @@ class zernikeDataset(Dataset):
         try:
             with open(self.filename[idx], "rb") as file:
                 loaded_data = pickle.load(file)
-        except Exception:
-            print(file)
-            print("error")
+        except (pickle.UnpicklingError, IOError, OSError) as e:
+            print(f"Error loading file {self.filename[idx] if idx < len(self.filename) else 'unknown'}: {e}")
             raise
         # convert zernikes microns
         x = torch.stack(loaded_data["estimated_zk"]).to(self.device) / 1000

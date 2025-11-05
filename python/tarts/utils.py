@@ -729,7 +729,7 @@ def filter_SNR(images, alpha):
             img_index.append(i)
             snr_list.append(ratio)
 
-    if len(keep_images) == 0:
+    if not keep_images:
         return np.array([[]]), np.array([[]]), np.array([[]])
     else:
         keep_images = torch.concatenate(keep_images)
