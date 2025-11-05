@@ -84,9 +84,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
         self.inputShape = (160, 160)
         self.val_mRSSE = None
 
-    def dare_gram_loss(
-        self, features_source: torch.Tensor, features_target: torch.Tensor
-    ) -> torch.Tensor:
+    def dare_gram_loss(self, features_source: torch.Tensor, features_target: torch.Tensor) -> torch.Tensor:
         """Compute DARE-GRAM loss between source and target features.
 
         Parameters
@@ -192,9 +190,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
         scale_loss = torch.clamp(scale_loss, min=0.0, max=100.0)
 
         # Combined DARE-GRAM loss
-        dare_gram_loss = (
-            self.hparams.tradeoff_angle * cos_distance + self.hparams.tradeoff_scale * scale_loss
-        )
+        dare_gram_loss = self.hparams.tradeoff_angle * cos_distance + self.hparams.tradeoff_scale * scale_loss
 
         # Final clamp to prevent explosion
         dare_gram_loss = torch.clamp(dare_gram_loss, min=0.0, max=100.0)

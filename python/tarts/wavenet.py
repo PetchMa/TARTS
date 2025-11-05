@@ -42,7 +42,9 @@ from .KERNEL import CUTOUT as DONUT
 #     _GAUSSIAN_KERNEL_CACHE[cache_key] = kernel
 #     return kernel
 
-# def apply_gaussian_blur(image: torch.Tensor, kernel_size: int, sigma: float, donut_mask=None) -> torch.Tensor:
+# def apply_gaussian_blur(
+#     image: torch.Tensor, kernel_size: int, sigma: float, donut_mask=None
+# ) -> torch.Tensor:
 #     """
 #     Apply 2D Gaussian blur to a 4D PyTorch tensor [B, C, H, W].
 #     Optimized version with kernel caching and reduced memory operations.
@@ -108,8 +110,9 @@ class WaveNet(nn.Module):
         Parameters
         ----------
         cnn_model: str, default="resnet18"
-            The name of the pre-trained CNN model from torchvision or timm.
-            Supports both torchvision models (e.g., "resnet18") and timm models (e.g., "mobilenetv4_conv_small").
+            The name of the pre-trained CNN model from torchvision or timm. Supports
+            both torchvision models (e.g., "resnet18") and timm models
+            (e.g., "mobilenetv4_conv_small").
         freeze_cnn: bool, default=False
             Whether to freeze the CNN weights.
         n_predictor_layers: tuple, default=(256)

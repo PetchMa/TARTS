@@ -188,9 +188,7 @@ class LearningRateThresholdCallback(pl.Callback):
         current_lr = trainer.optimizers[0].param_groups[0]["lr"]
 
         if current_lr < self.threshold:
-            print(
-                f"Learning rate {current_lr:.2e} below threshold {self.threshold:.2e}. Stopping training."
-            )
+            print(f"Learning rate {current_lr:.2e} below threshold {self.threshold:.2e}. Stopping training.")
             trainer.should_stop = True
 
 
@@ -641,9 +639,7 @@ def batched_crop(image_tensor: torch.Tensor, centers: torch.Tensor, crop_size: i
     top = torch.clamp(centers[:, 1] - crop_size // 2, 0, H - crop_size)
 
     # Use advanced indexing to extract crops
-    crops = torch.stack(
-        [image_tensor[:, t : t + crop_size, l : l + crop_size] for t, l in zip(top, left)]
-    )
+    crops = torch.stack([image_tensor[:, t : t + crop_size, l : l + crop_size] for t, l in zip(top, left)])
 
     return crops
 
@@ -966,9 +962,7 @@ def getzk(row):
 def getRealData(butler, cdb_table, ind):
     """Get real data from source."""
     if not LSST_AVAILABLE:
-        raise ImportError(
-            "LSST dependencies not available. This function requires LSST installation."
-        )
+        raise ImportError("LSST dependencies not available. This function requires LSST installation.")
 
     exposure_id = cdb_table["visit_id"][ind]
     detector_name = cdb_table["detector"][ind]
@@ -984,8 +978,6 @@ def getRealData(butler, cdb_table, ind):
     }
     data_1 = butler.get("raw", dataId=data_id1, collections="LSSTCam/raw/all")
     data_2 = butler.get("raw", dataId=data_id2, collections="LSSTCam/raw/all")
-    row = cdb_table[
-        (cdb_table["visit_id"] == exposure_id) & (cdb_table["detector"] == detector_name)
-    ]
+    row = cdb_table[(cdb_table["visit_id"] == exposure_id) & (cdb_table["detector"] == detector_name)]
     zk = getzk(row)
     return (data_1, detector_name, zk), (data_2, detector_name + 1, zk)

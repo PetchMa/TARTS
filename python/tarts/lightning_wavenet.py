@@ -148,8 +148,9 @@ class WaveNetSystem(pl.LightningModule):
         Parameters
         ----------
         cnn_model: str, default="resnet34"
-            The name of the pre-trained CNN model from torchvision or timm.
-            Supports both torchvision models (e.g., "resnet34") and timm models (e.g., "mobilenetv4_conv_small").
+            The name of the pre-trained CNN model from torchvision or timm. Supports
+            both torchvision models (e.g., "resnet34") and timm models
+            (e.g., "mobilenetv4_conv_small").
         freeze_cnn: bool, default=False
             Whether to freeze the CNN weights.
         n_predictor_layers: tuple, default=(256)

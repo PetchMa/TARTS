@@ -87,9 +87,7 @@ class Donuts(Dataset):
 
         # get a list of all the observations
         all_image_files = glob.glob(f"{data_dir}/images/*")
-        obs_ids = list(
-            set([int(file.split("/")[-1].split(".")[1][3:]) for file in all_image_files])
-        )
+        obs_ids = list(set([int(file.split("/")[-1].split(".")[1][3:]) for file in all_image_files]))
 
         # get the table of metadata for each observation
         observations = Table.read(f"{data_dir}/opSimTable.parquet")
@@ -121,11 +119,7 @@ class Donuts(Dataset):
         self.adjustment_factor = adjustment_factor
         # partition the image files
         self.image_files = {
-            mode: [
-                file
-                for file in all_image_files
-                if int(file.split("/")[-1].split(".")[1][3:]) in ids
-            ]
+            mode: [file for file in all_image_files if int(file.split("/")[-1].split(".")[1][3:]) in ids]
             for mode, ids in self.obs_ids.items()
         }
 
@@ -210,9 +204,7 @@ class Donuts(Dataset):
         # convert everything to tensors
         img = torch.from_numpy(img).float()
         # shift the image
-        img_adjusted, offset_amount = shift_offcenter(
-            img, adjust=self.adjustment_factor, return_offset=True
-        )
+        img_adjusted, offset_amount = shift_offcenter(img, adjust=self.adjustment_factor, return_offset=True)
         # track the offset vector and renormalise the vector amount
         offset_vec = np.array(np.array(offset_amount).astype(np.float32)) / self.adjustment_factor
         # compute the radial offset factor (vector norm)
@@ -511,13 +503,9 @@ class Donuts_Fullframe(Dataset):
 
         # Apply image shifting only in train mode and when adjustment_factor > 0
         if self.settings["mode"] == "train" and self.adjustment_factor > 0:
-            img, offset_amount = shift_offcenter(
-                img, adjust=self.adjustment_factor, return_offset=True
-            )
+            img, offset_amount = shift_offcenter(img, adjust=self.adjustment_factor, return_offset=True)
             # Add offset information to output
-            offset_vec = (
-                np.array(np.array(offset_amount).astype(np.float32)) / self.adjustment_factor
-            )
+            offset_vec = np.array(np.array(offset_amount).astype(np.float32)) / self.adjustment_factor
             offset_r = np.sqrt(offset_amount[0] ** 2 + offset_amount[1] ** 2)
             offset_r = np.array(offset_r.astype(np.float32)) / self.adjustment_factor
         else:
@@ -726,9 +714,7 @@ class zernikeDataset(Dataset):
         if x_total.shape[0] > self.max_seq_length:
             x_total = x_total[: self.max_seq_length, :]
         else:
-            padding = torch.zeros((self.max_seq_length - x_total.shape[0], x_total.shape[1])).to(
-                self.device
-            )
+            padding = torch.zeros((self.max_seq_length - x_total.shape[0], x_total.shape[1])).to(self.device)
             x_total = torch.cat([x_total, padding], axis=0).to(self.device).float()
         y = loaded_data["zk_true"]
         # return the stack of embedings, mean zernike estimate and the true zernike in PSF

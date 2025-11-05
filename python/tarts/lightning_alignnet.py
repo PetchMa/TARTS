@@ -91,8 +91,9 @@ class AlignNetSystem(pl.LightningModule):
         Parameters
         ----------
         cnn_model : str, optional, default="mobilenetv4_conv_small"
-            The name of the pre-trained CNN model from torchvision or timm to be used as the feature extractor.
-            Common options include "resnet18", "resnet34", "mobilenetv4_conv_small", etc.
+            The name of the pre-trained CNN model from torchvision or timm to be used
+            as the feature extractor. Common options include "resnet18", "resnet34",
+            "mobilenetv4_conv_small", etc.
 
         freeze_cnn : bool, optional, default=False
             If True, the CNN weights will be frozen during training, meaning they will not be updated.
