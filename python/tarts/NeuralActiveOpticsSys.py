@@ -487,11 +487,11 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         ood_scores = None
         if self.ood_model is not None and hasattr(self.wavenet_model.wavenet, 'predictor_features'):
             try:
-                # Get predictor penultimate features (already on CPU from WaveNet forward pass)
+                # Get predictor penultimate features and detach/convert to CPU for numpy
                 penultimate = self.wavenet_model.wavenet.predictor_features  # Shape: (batch_size, n_features)
 
-                # Convert to numpy and compute Mahalanobis distance
-                features_np = penultimate.numpy()  # Already on CPU
+                # Detach from computation graph and move to CPU for numpy conversion
+                features_np = penultimate.detach().cpu().numpy()
                 if self.ood_mean is not None:
                     features_centered = features_np - self.ood_mean.cpu().numpy()
                     mahalanobis_dist = self.ood_model.mahalanobis(features_centered)
@@ -652,11 +652,11 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         ood_scores = None
         if self.ood_model is not None and hasattr(self.wavenet_model.wavenet, 'predictor_features'):
             try:
-                # Get predictor penultimate features (already on CPU from WaveNet forward pass)
+                # Get predictor penultimate features and detach/convert to CPU for numpy
                 penultimate = self.wavenet_model.wavenet.predictor_features  # Shape: (batch_size, n_features)
 
-                # Convert to numpy and compute Mahalanobis distance
-                features_np = penultimate.numpy()  # Already on CPU
+                # Detach from computation graph and move to CPU for numpy conversion
+                features_np = penultimate.detach().cpu().numpy()
                 if self.ood_mean is not None:
                     features_centered = features_np - self.ood_mean.cpu().numpy()
                     mahalanobis_dist = self.ood_model.mahalanobis(features_centered)

@@ -314,11 +314,13 @@ class WaveNet(nn.Module):
         # Penultimate features (output of predictor just before final linear layer)
         if len(self.predictor) >= 1:
             pre_logits = self.predictor[:-1](features)
-            self.predictor_features = pre_logits.clone().detach().cpu()
             zernikes = self.predictor[-1](pre_logits)
         else:
             # Edge case: no layers (shouldn't happen); fallback
-            self.predictor_features = features.clone().detach().cpu()
             zernikes = features
+            pre_logits = features
+
+        # Store features as is (on device) for DARE-GRAM, but can be converted later for OOD
+        self.predictor_features = pre_logits
 
         return zernikes

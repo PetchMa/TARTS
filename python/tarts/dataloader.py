@@ -368,10 +368,52 @@ class Donuts_Fullframe(Dataset):
 
     def sample_coral(self) -> Dict[str, torch.Tensor]:
         """Sample a coral image randomly."""
-        # Randomly sample from coral image files
-        idx = np.random.randint(0, len(self.coral_image_files))
-        img_file = self.coral_image_files[idx]
-        state = np.load(img_file, allow_pickle=True)
+        # Check if coral files are available
+        if not self.coral_image_files or len(self.coral_image_files) == 0:
+            raise RuntimeError("No coral image files available for sampling.")
+
+        # Randomly sample from coral image files with retry for corrupted files
+        max_retries = 10
+        corrupted_files = []  # Track files to remove
+
+        for attempt in range(max_retries):
+            try:
+                # Re-check availability in case files were deleted
+                if len(self.coral_image_files) == 0:
+                    raise RuntimeError("All coral image files have been removed due to corruption.")
+
+                idx = np.random.randint(0, len(self.coral_image_files))
+                img_file = self.coral_image_files[idx]
+
+                # Skip already identified corrupted files
+                if img_file in corrupted_files:
+                    continue
+
+                state = np.load(img_file, allow_pickle=True)
+                break  # Successfully loaded, exit retry loop
+            except (EOFError, IOError, OSError) as e:
+                # File is corrupted, truncated, or missing - delete it
+                print(f"⚠️  Corrupted coral file detected: {img_file}. Error: {e}. Deleting...")
+                try:
+                    if os.path.exists(img_file):
+                        os.remove(img_file)
+                        print(f"✓ Deleted corrupted file: {img_file}")
+                except Exception as delete_error:
+                    print(f"⚠️  Failed to delete {img_file}: {delete_error}")
+
+                # Remove from list to avoid trying again
+                if img_file in self.coral_image_files:
+                    self.coral_image_files.remove(img_file)
+                corrupted_files.append(img_file)
+
+                if attempt == max_retries - 1:
+                    # Last attempt failed, raise the error
+                    raise RuntimeError(
+                        f"Failed to load coral file after {max_retries} attempts. "
+                        f"Last error: {e}. All coral files may be corrupted."
+                    )
+                # Try another random file
+                continue
 
         # get the donut locations
         fx, fy = (
@@ -384,7 +426,11 @@ class Donuts_Fullframe(Dataset):
 
         band = torch.tensor(state["band"]).int().item()
         img = torch.tensor(state["image_aligned"])
-        zernikes = torch.tensor(state["zk_true"])
+
+        # Get zernikes using noll_zk indexing
+        # Convert to numpy first to handle object dtype from npz files
+        zernikes = torch.zeros((1, len(self.noll_zk)))
+
         # standardize all the inputs for the neural net
         if self.settings["transform"]:
             img, fx, fy, intra, band = transform_inputs(  # type: ignore
@@ -402,7 +448,7 @@ class Donuts_Fullframe(Dataset):
         fy = torch.FloatTensor([fy])
         intra = torch.FloatTensor([intra])  # type: ignore
         band = torch.FloatTensor([band])  # type: ignore
-        zernikes = zernikes.float()[:, 0]
+        zernikes = zernikes.float()[0, :]
         coral_output = {
             "coral_image": img,
             "coral_field_x": fx,
