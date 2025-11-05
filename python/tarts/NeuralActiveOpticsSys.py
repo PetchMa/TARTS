@@ -125,22 +125,11 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         if alignet_path is None:
             self.alignnet_model = AlignNetSystem(pretrained=pretrained).to(self.device_val)
         else:
-            try:
-                # Always use checkpoint loading - the pretrained parameter doesn't matter
-                # when loading from checkpoint
-                self.alignnet_model = AlignNetSystem.load_from_checkpoint(
-                    alignet_path, map_location=str(self.device_val)
-                ).to(self.device_val)
-                print("✅ Loaded AlignNet regular checkpoint")
-            except (FileNotFoundError, RuntimeError, KeyError, AttributeError):
-                print("⚠️  Regular AlignNet loading failed")
-                print("🔄 Trying to load AlignNet as QAT-trained model...")
-                from training.load_qat_model import load_qat_trained_model
-
-                self.alignnet_model = load_qat_trained_model(alignet_path, device=str(self.device_val)).to(
-                    self.device_val
-                )
-                print("✅ Loaded AlignNet QAT-trained model")
+            # Always use checkpoint loading - the pretrained parameter doesn't matter
+            # when loading from checkpoint
+            self.alignnet_model = AlignNetSystem.load_from_checkpoint(
+                alignet_path, map_location=str(self.device_val)
+            ).to(self.device_val)
 
         self.max_seq_length = params["max_seq_len"]
         self.aggregator_on = aggregator_on
