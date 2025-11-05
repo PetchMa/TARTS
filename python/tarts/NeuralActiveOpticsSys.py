@@ -1,31 +1,35 @@
 """Neural network to predict zernike coefficients from donut images and positions."""
 
+# Standard library imports
+import copy
+import os
+
+# Third-party imports
+import joblib
+import pytorch_lightning as pl
+import torch
+import torch.nn.functional as F_loss
+import torchvision.transforms.functional as F
+import yaml
+from lsst.ip.isr import AssembleCcdTask
+from lsst.meas.algorithms import subtractBackground
+from lsst.obs.lsst import LsstCam
+from lsst.obs.lsst.cameraTransforms import LsstCameraTransforms
+from torch import nn, vmap
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+# Local/application imports
+from .aggregatornet import AggregatorNet
+from .lightning_alignnet import AlignNetSystem
+from .lightning_wavenet import WaveNetSystem
 from .utils import (
+    MAP_DETECTOR_TO_NUMBER,
     batched_crop,
-    get_centers,
     convert_zernikes_deploy,
+    get_centers,
     single_conv,
     shift_offcenter,
 )
-import torch
-from torch import nn
-from .lightning_wavenet import WaveNetSystem
-from .lightning_alignnet import AlignNetSystem
-from .aggregatornet import AggregatorNet
-import yaml
-from torch import vmap
-import pytorch_lightning as pl
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-import torch.nn.functional as F_loss
-import torchvision.transforms.functional as F
-import copy
-import os
-import joblib
-from lsst.obs.lsst import LsstCam
-from lsst.obs.lsst.cameraTransforms import LsstCameraTransforms
-from lsst.ip.isr import AssembleCcdTask
-from lsst.meas.algorithms import subtractBackground
-from .utils import MAP_DETECTOR_TO_NUMBER
 
 
 class NeuralActiveOpticsSys(pl.LightningModule):
@@ -75,7 +79,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             Path to OOD detection model (joblib file). If provided, OOD detection will be performed
             during inference and scores will be stored in internal metadata. Defaults to None.
         """
-        super(NeuralActiveOpticsSys, self).__init__()
+        super().__init__()
         self.save_hyperparameters()
         self.device_val = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -310,7 +314,12 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         """
         # Get device from the data tensor to ensure compatibility with quantized models
         device = data.device
-        return vmap(lambda x: single_conv(x, device=str(device)))(data)
+
+        def _single_conv_wrapper(x):
+            """Wrapper function for single_conv to use with vmap."""
+            return single_conv(x, device=str(device))
+
+        return vmap(_single_conv_wrapper)(data)
 
     def convert_zernike_device(self, data):
         """Convert Zernike coefficients format for device computation.

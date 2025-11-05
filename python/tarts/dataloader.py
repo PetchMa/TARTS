@@ -1,14 +1,19 @@
 """Pytorch DataSet for the AOS simulations."""
 
+# Standard library imports
 import glob
-from typing import Any, Dict
+import os
 import pickle
+from typing import Any, Dict
+
+# Third-party imports
 import numpy as np
 import torch
 from astropy.table import Table
-from .utils import transform_inputs, shift_offcenter
 from torch.utils.data import Dataset
-import os
+
+# Local/application imports
+from .utils import shift_offcenter, transform_inputs
 
 
 class Donuts(Dataset):
@@ -277,7 +282,7 @@ class Donuts_Fullframe(Dataset):
         transform: bool = True,
         adjustment_factor=0,
         data_dir: str = "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain/",
-        noll_zk: list = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 27, 28],
+        noll_zk: list | None = None,
         coral_filepath: str = "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/coral/",
         coral_mode: bool = False,
         mask_mode: bool = False,
@@ -296,8 +301,9 @@ class Donuts_Fullframe(Dataset):
             RADIAL factor used to shift the image during loading.
         data_dir: str, default=aos_sims
             Location of the data directory.
-        noll_zk: list, default=[4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 27, 28]
+        noll_zk: list, default=None
             List of Noll Zernike indices to include in the dataset.
+            If None, defaults to [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 27, 28].
         coral_filepath: str, default="/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/coral/"
             Path to the coral dataset directory.
         coral_mode: bool, default=False
@@ -342,6 +348,8 @@ class Donuts_Fullframe(Dataset):
 
             self.image_files = self.image_files[: int(0.5 * len(self.image_files))]
 
+        if noll_zk is None:
+            noll_zk = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 27, 28]
         self.noll_zk = np.array(noll_zk) - 4
         self.adjustment_factor = adjustment_factor
 

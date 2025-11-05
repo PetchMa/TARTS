@@ -1,9 +1,10 @@
 """Neural network to predict donut placement coefficients from donut images and positions."""
 
+# Third-party imports
+import timm
 import torch
 from torch import nn
 from torchvision import models as cnn_models
-import timm
 
 
 class AlignNet(nn.Module):

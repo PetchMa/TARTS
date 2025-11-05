@@ -1,11 +1,16 @@
 """Wrapping everything for WaveNet in Pytorch Lightning."""
 
+# Standard library imports
 from typing import Any, Tuple
+
+# Third-party imports
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
+
+# Local/application imports
 from .dataloader import Donuts, Donuts_Fullframe
 from .utils import convert_zernikes_deploy
 from .wavenet import WaveNet

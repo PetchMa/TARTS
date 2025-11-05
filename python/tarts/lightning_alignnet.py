@@ -1,13 +1,18 @@
 """Wrapping everything for WaveNet in Pytorch Lightning."""
 
+# Standard library imports
 from typing import Any, Tuple
+
+# Third-party imports
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
-from .dataloader import Donuts
+
+# Local/application imports
 from .alignnet import AlignNet
+from .dataloader import Donuts
 
 
 class DonutLoader(pl.LightningDataModule):

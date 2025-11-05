@@ -1,23 +1,21 @@
 """Utility functions."""
 
+# Standard library imports
 import os
 from pathlib import Path
 from random import randint
+from typing import Optional
+import warnings
+
+# Third-party imports
+import matplotlib.pyplot as plt
 import numpy as np
+import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
-from torch import nn
-
-# from lsst.summit.utils import ConsDbClient
-
-from .KERNEL import CUTOUT as DONUT
-
-import pytorch_lightning as pl
-from torch.ao.quantization.qconfig import default_qat_qconfig
-from typing import Optional
 import yaml
-import warnings
+from torch import nn
+from torch.ao.quantization.qconfig import default_qat_qconfig
 
 # Optional imports
 try:
@@ -27,6 +25,11 @@ try:
 except ImportError:
     GIT_AVAILABLE = False
     git = None
+
+# Local/application imports
+from .KERNEL import CUTOUT as DONUT
+
+# from lsst.summit.utils import ConsDbClient
 
 LSST_AVAILABLE = True
 
@@ -743,7 +746,7 @@ class CORALLoss(nn.Module):
 
     def __init__(self):
         """Initialize the CORAL loss."""
-        super(CORALLoss, self).__init__()
+        super().__init__()
 
     def forward(self, source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Forward pass of CORAL loss.

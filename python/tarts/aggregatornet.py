@@ -5,13 +5,14 @@ predictions from multiple donut images to produce a single, improved estimate
 of Zernike coefficients for the LSST Active Optics System.
 """
 
+# Third-party imports
+import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-import pytorch_lightning as pl
 import torch.nn.functional as F_loss
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-# from typing import Tuple  # Unused import
+# Local/application imports
 from .utils import convert_zernikes_deploy
 
 
@@ -83,7 +84,7 @@ class AggregatorNet(pl.LightningModule):
         - The model outputs a linear transformation of size `num_zernikes`.
 
         """
-        super(AggregatorNet, self).__init__()
+        super().__init__()
         self.save_hyperparameters()  # Save model hyperparameters
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,

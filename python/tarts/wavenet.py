@@ -1,9 +1,12 @@
 """Neural network to predict zernike coefficients from donut images and positions."""
 
+# Third-party imports
+import timm
 import torch
 from torch import nn
 from torchvision import models as cnn_models
-import timm
+
+# Local/application imports
 from .KERNEL import CUTOUT as DONUT
 
 

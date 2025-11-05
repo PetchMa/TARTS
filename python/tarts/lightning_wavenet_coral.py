@@ -4,12 +4,17 @@ This module implements a WaveNet system with DARE-GRAM loss for unsupervised dom
 The method aligns inverse Gram matrices between source and target domains without requiring target labels.
 """
 
+# Standard library imports
 from typing import Tuple
+
+# Third-party imports
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+# Local/application imports
 from .utils import convert_zernikes_deploy
 from .wavenet import WaveNet
 
