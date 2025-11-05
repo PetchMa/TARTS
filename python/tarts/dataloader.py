@@ -2,6 +2,7 @@
 
 # Standard library imports
 import glob
+import logging
 import os
 import pickle
 from typing import Any, Dict, List, Optional, Tuple
@@ -15,6 +16,8 @@ from torch.utils.data import Dataset
 # Local/application imports
 from .constants import DEFAULT_NOLL_ZK, DEFAULT_TRAIN_FRACTION
 from .utils import shift_offcenter, transform_inputs
+
+logger = logging.getLogger(__name__)
 
 
 class Donuts(Dataset):
@@ -328,7 +331,7 @@ class Donuts_Fullframe(Dataset):
             for file in files:
                 file_path = os.path.join(root, file)
                 self.image_files.append(file_path)
-        print(self.image_dir)
+        logger.debug(f"Image directory: {self.image_dir}")
         self.coral_filepath = coral_filepath
         self.coral_mode = coral_mode
         if coral_mode:
@@ -385,13 +388,13 @@ class Donuts_Fullframe(Dataset):
                 break  # Successfully loaded, exit retry loop
             except (EOFError, IOError, OSError) as e:
                 # File is corrupted, truncated, or missing - delete it
-                print(f"⚠️  Corrupted coral file detected: {img_file}. Error: {e}. Deleting...")
+                logger.warning(f"Corrupted coral file detected: {img_file}. Error: {e}. Deleting...")
                 try:
                     if os.path.exists(img_file):
                         os.remove(img_file)
-                        print(f"✓ Deleted corrupted file: {img_file}")
+                        logger.info(f"Deleted corrupted file: {img_file}")
                 except (OSError, PermissionError) as delete_error:
-                    print(f"⚠️  Failed to delete {img_file}: {delete_error}")
+                    logger.warning(f"Failed to delete {img_file}: {delete_error}")
 
                 # Remove from list to avoid trying again
                 if img_file in self.coral_image_files:
@@ -723,7 +726,9 @@ class zernikeDataset(Dataset):
             with open(self.filename[idx], "rb") as file:
                 loaded_data = pickle.load(file)
         except (pickle.UnpicklingError, IOError, OSError) as e:
-            print(f"Error loading file {self.filename[idx] if idx < len(self.filename) else 'unknown'}: {e}")
+            logger.error(
+                f"Error loading file {self.filename[idx] if idx < len(self.filename) else 'unknown'}: {e}"
+            )
             raise
         # convert zernikes microns
         x = torch.stack(loaded_data["estimated_zk"]).to(self.device) / 1000

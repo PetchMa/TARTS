@@ -5,6 +5,7 @@ The method aligns inverse Gram matrices between source and target domains withou
 """
 
 # Standard library imports
+import logging
 from typing import Any, Dict, Tuple
 
 # Third-party imports
@@ -30,6 +31,8 @@ from .constants import (
 )
 from .utils import convert_zernikes_deploy
 from .wavenet import WaveNet
+
+logger = logging.getLogger(__name__)
 
 
 class WaveNetSystem_Coral(pl.LightningModule):
@@ -327,7 +330,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
                 # Compute DARE-GRAM loss for logging
                 dare_gram_loss = self.dare_gram_loss(source_features, target_features)
             except (RuntimeError, ValueError, IndexError) as e:
-                print(f"⚠️  DARE-GRAM loss computation failed: {e}")
+                logger.warning(f"DARE-GRAM loss computation failed: {e}")
                 dare_gram_loss = torch.tensor(0.0, device=self.device_val)
 
         scale_loss = self.exp_rise_flipped(self.val_mRSSE if self.val_mRSSE is not None else mRSSE)

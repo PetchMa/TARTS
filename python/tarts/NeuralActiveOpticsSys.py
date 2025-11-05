@@ -2,6 +2,7 @@
 
 # Standard library imports
 import copy
+import logging
 import os
 from typing import Any, Dict, List
 
@@ -31,6 +32,8 @@ from .utils import (
     single_conv,
     shift_offcenter,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class NeuralActiveOpticsSys(pl.LightningModule):
@@ -100,14 +103,14 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         self.ood_model = None
         self.ood_mean = None
         if ood_model_path is not None and os.path.exists(ood_model_path):
-            print(f"Loading OOD detection model from {ood_model_path}...")
+            logger.info(f"Loading OOD detection model from {ood_model_path}...")
             ood_data = joblib.load(ood_model_path)
             self.ood_model = ood_data["cov_model"]
             self.ood_mean = torch.tensor(ood_data["mean"], device=self.device_val, dtype=torch.float32)
-            print("✅ OOD detection model loaded successfully")
+            logger.info("OOD detection model loaded successfully")
         elif ood_model_path is not None:
-            print(f"⚠️  OOD model path provided but file not found: {ood_model_path}")
-            print("   Continuing without OOD detection...")
+            logger.warning(f"OOD model path provided but file not found: {ood_model_path}")
+            logger.info("Continuing without OOD detection...")
 
         # Load parameters from YAML file once
         with open(dataset_params, "r") as yaml_file:
@@ -133,7 +136,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         self.max_seq_length = params["max_seq_len"]
         self.aggregator_on = aggregator_on
-        print(self.device_val)
+        logger.debug(f"Using device: {self.device_val}")
         if aggregatornet_path is None:
             d_model = params["aggregator_model"]["d_model"]
             nhead = params["aggregator_model"]["nhead"]
@@ -173,28 +176,28 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             # Determine compilation backend based on device
             if self.device_val.type == "cpu":
                 compile_backend = "inductor"
-                print("🔧 Compiling submodels with torch.compile (CPU backend: inductor)...")
+                logger.info("Compiling submodels with torch.compile (CPU backend: inductor)...")
             else:
                 compile_backend = None  # Use default backend for GPU
-                print("🔧 Compiling submodels with torch.compile (GPU backend: default)...")
+                logger.info("Compiling submodels with torch.compile (GPU backend: default)...")
 
             try:
                 if compile_backend is not None:
                     self.wavenet_model = torch.compile(self.wavenet_model, backend=compile_backend)
                 else:
                     self.wavenet_model = torch.compile(self.wavenet_model)
-                print(f"✅ WaveNet compiled with backend: {compile_backend or 'default'}")
+                logger.info(f"WaveNet compiled with backend: {compile_backend or 'default'}")
             except (RuntimeError, TypeError, AttributeError) as e:
-                print(f"⚠️  WaveNet compilation failed: {e}")
+                logger.warning(f"WaveNet compilation failed: {e}")
 
             try:
                 if compile_backend is not None:
                     self.alignnet_model = torch.compile(self.alignnet_model, backend=compile_backend)
                 else:
                     self.alignnet_model = torch.compile(self.alignnet_model)
-                print(f"✅ AlignNet compiled with backend: {compile_backend or 'default'}")
+                logger.info(f"AlignNet compiled with backend: {compile_backend or 'default'}")
             except (RuntimeError, TypeError, AttributeError) as e:
-                print(f"⚠️  AlignNet compilation failed: {e}")
+                logger.warning(f"AlignNet compilation failed: {e}")
 
             try:
                 if compile_backend is not None:
@@ -203,13 +206,13 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                     )
                 else:
                     self.aggregatornet_model = torch.compile(self.aggregatornet_model)
-                print(f"✅ AggregatorNet compiled with backend: {compile_backend or 'default'}")
+                logger.info(f"AggregatorNet compiled with backend: {compile_backend or 'default'}")
             except (RuntimeError, TypeError, AttributeError) as e:
-                print(f"⚠️  AggregatorNet compilation failed: {e}")
+                logger.warning(f"AggregatorNet compilation failed: {e}")
 
-            print("🎉 Model compilation completed!")
+            logger.info("Model compilation completed!")
         else:
-            print("ℹ️  Model compilation disabled (compile_models=False)")
+            logger.info("Model compilation disabled (compile_models=False)")
 
     def compile_submodels(self):
         """Apply torch.compile to all submodels for faster inference.
@@ -221,39 +224,39 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         # Determine compilation backend based on device
         if self.device_val.type == "cpu":
             compile_backend = "inductor"
-            print("🔧 Compiling submodels with torch.compile (CPU backend: inductor)...")
+            logger.info("Compiling submodels with torch.compile (CPU backend: inductor)...")
         else:
             compile_backend = None  # Use default backend for GPU
-            print("🔧 Compiling submodels with torch.compile (GPU backend: default)...")
+            logger.info("Compiling submodels with torch.compile (GPU backend: default)...")
 
         try:
             if compile_backend is not None:
                 self.wavenet_model = torch.compile(self.wavenet_model, backend=compile_backend)
             else:
                 self.wavenet_model = torch.compile(self.wavenet_model)
-            print(f"✅ WaveNet compiled with backend: {compile_backend or 'default'}")
+            logger.info(f"WaveNet compiled with backend: {compile_backend or 'default'}")
         except (RuntimeError, TypeError, AttributeError) as e:
-            print(f"⚠️  WaveNet compilation failed: {e}")
+            logger.warning(f"WaveNet compilation failed: {e}")
 
         try:
             if compile_backend is not None:
                 self.alignnet_model = torch.compile(self.alignnet_model, backend=compile_backend)
             else:
                 self.alignnet_model = torch.compile(self.alignnet_model)
-            print(f"✅ AlignNet compiled with backend: {compile_backend or 'default'}")
+            logger.info(f"AlignNet compiled with backend: {compile_backend or 'default'}")
         except (RuntimeError, TypeError, AttributeError) as e:
-            print(f"⚠️  AlignNet compilation failed: {e}")
+            logger.warning(f"AlignNet compilation failed: {e}")
 
         try:
             if compile_backend is not None:
                 self.aggregatornet_model = torch.compile(self.aggregatornet_model, backend=compile_backend)
             else:
                 self.aggregatornet_model = torch.compile(self.aggregatornet_model)
-            print(f"✅ AggregatorNet compiled with backend: {compile_backend or 'default'}")
+            logger.info(f"AggregatorNet compiled with backend: {compile_backend or 'default'}")
         except (RuntimeError, TypeError, AttributeError) as e:
-            print(f"⚠️  AggregatorNet compilation failed: {e}")
+            logger.warning(f"AggregatorNet compilation failed: {e}")
 
-        print("🎉 Model compilation completed!")
+        logger.info("Model compilation completed!")
 
     def get_internal_data(self):
         """Retrieve all internal data as a list of dictionaries.
@@ -882,7 +885,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             SubtractBackground = subtractBackground.SubtractBackgroundTask()
             SubtractBackground.run(new)
         except (AttributeError, RuntimeError, ValueError) as e:
-            print("Warning: switching to no CCD assembly: ", str(e))
+            logger.warning(f"Switching to no CCD assembly: {e}")
             new = exposure
             SubtractBackground = subtractBackground.SubtractBackgroundTask()
             SubtractBackground.run(new)

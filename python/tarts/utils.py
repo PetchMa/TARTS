@@ -1,6 +1,7 @@
 """Utility functions."""
 
 # Standard library imports
+import logging
 import os
 import warnings
 from pathlib import Path
@@ -43,6 +44,8 @@ from .constants import (
 
 # Alias for backward compatibility
 DONUT = DONUT_TEMPLATE
+
+logger = logging.getLogger(__name__)
 
 
 def safe_yaml_load(file_path: str) -> Dict[str, Any]:
@@ -134,7 +137,7 @@ class QuantizationAwareTrainingCallback(pl.Callback):
             self.qat_enabled = True
 
     def _enable_qat(self, pl_module):
-        print(f"🔥 Enabling Quantization Aware Training at epoch {self.start_epoch}")
+        logger.info(f"Enabling Quantization Aware Training at epoch {self.start_epoch}")
         torch.backends.quantized.engine = self.quantization_backend
 
         if not hasattr(pl_module, self.model_attr):
@@ -152,12 +155,12 @@ class QuantizationAwareTrainingCallback(pl.Callback):
                 module.qconfig = qconfig
 
         torch.quantization.prepare_qat(model, inplace=True)
-        print("✅ Model prepared for Quantization Aware Training")
+        logger.info("Model prepared for Quantization Aware Training")
 
     def on_train_end(self, trainer, pl_module):
         """Disable QAT at the end of training."""
         if self.qat_enabled:
-            print("🔧 Converting QAT model to quantized model...")
+            logger.info("Converting QAT model to quantized model...")
             if not hasattr(pl_module, self.model_attr):
                 raise AttributeError(
                     f"Module {type(pl_module).__name__} has no attribute '{self.model_attr}'"
@@ -175,10 +178,10 @@ class QuantizationAwareTrainingCallback(pl.Callback):
                 },
                 quantized_path,
             )
-            print(f"💾 Quantized model saved to: {quantized_path}")
+            logger.info(f"Quantized model saved to: {quantized_path}")
             original_size = sum(p.numel() * 4 for p in model.parameters()) / 1024 / 1024
-            print(f"📊 Original model parameters: {original_size:.2f}MB equivalent")
-            print("📊 Quantized model should be ~4x smaller for int8 quantization")
+            logger.info(f"Original model parameters: {original_size:.2f}MB equivalent")
+            logger.info("Quantized model should be ~4x smaller for int8 quantization")
 
 
 class LearningRateThresholdCallback(pl.Callback):
@@ -208,7 +211,9 @@ class LearningRateThresholdCallback(pl.Callback):
         current_lr = trainer.optimizers[0].param_groups[0]["lr"]
 
         if current_lr < self.threshold:
-            print(f"Learning rate {current_lr:.2e} below threshold {self.threshold:.2e}. Stopping training.")
+            logger.info(
+                f"Learning rate {current_lr:.2e} below threshold {self.threshold:.2e}. Stopping training."
+            )
             trainer.should_stop = True
 
 
@@ -378,23 +383,25 @@ def count_parameters(model: torch.nn.Module, trainable: bool = True) -> int:
 
 
 def printOnce(msg: str, header: bool = False) -> None:
-    """Print message once to the terminal.
+    """Log message once to avoid duplicate messages in distributed settings.
 
-    This avoids the problem where statements get printed multiple times in
+    This avoids the problem where statements get logged multiple times in
     a distributed setting.
 
     Parameters
     ----------
     msg: str
-        Message to print
+        Message to log
     header: bool, default=False
         Whether to add extra space and underline for the message
     """
     rank = os.environ.get("LOCAL_RANK", None)
     if rank is None or rank == "0":
         if header:
-            msg = f"\n{msg}\n{'-'*len(msg)}\n"
-        print(msg)
+            formatted_msg = f"\n{msg}\n{'-'*len(msg)}\n"
+            logger.info(formatted_msg)
+        else:
+            logger.info(msg)
 
 
 def transform_inputs(
