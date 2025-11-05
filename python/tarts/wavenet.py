@@ -91,7 +91,7 @@ class WaveNet(nn.Module):
         self.predictor = nn.Sequential(*layers).to(self.device_val)
 
         # Cache the donut mask to avoid repeated computation
-        self._donut_mask = None
+        self._donut_mask: torch.Tensor | None = None
 
         # Ensure all model parameters are in float32 to avoid dtype mismatches
         self.float()
@@ -154,7 +154,9 @@ class WaveNet(nn.Module):
 
     def _get_donut_mask(self, device):
         """Get cached donut mask."""
-        if self._donut_mask is None or self._donut_mask.device != device:
+        if self._donut_mask is None:
+            self._donut_mask = DONUT[40:200, 40:200].float().to(device)
+        elif self._donut_mask.device != device:
             self._donut_mask = DONUT[40:200, 40:200].float().to(device)
         return self._donut_mask
 

@@ -289,7 +289,7 @@ class WaveNetSystem(pl.LightningModule):
 
         return loss
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
+    def configure_optimizers(self) -> Any:
         """Configure the optimizer."""
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=1e-4)
         # optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)

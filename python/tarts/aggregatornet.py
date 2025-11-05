@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F_loss
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from typing import Any
 
 # Local/application imports
 from .utils import convert_zernikes_deploy
@@ -227,7 +228,7 @@ class AggregatorNet(pl.LightningModule):
         mRSSe = torch.sqrt(sse).mean()
         return mRSSe
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
+    def configure_optimizers(self) -> Any:
         """Configure the optimizer."""
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
 

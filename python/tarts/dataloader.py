@@ -220,8 +220,8 @@ class Donuts(Dataset):
         # record the meta data
         fx = torch.FloatTensor([fx])
         fy = torch.FloatTensor([fy])
-        intra = torch.FloatTensor([intra])  # type: ignore
-        band = torch.FloatTensor([band])  # type: ignore
+        intra = torch.FloatTensor([intra])
+        band = torch.FloatTensor([band])
         zernikes = torch.from_numpy(zernikes).float()
         dof = torch.from_numpy(dof).float()
 
@@ -356,9 +356,9 @@ class Donuts_Fullframe(Dataset):
 
     def __len__(self) -> int:
         """Return length of this Dataset."""
-        return len(self.image_files)  # type: ignore
+        return len(self.image_files)
 
-    def sample_coral(self) -> Dict[str, torch.Tensor]:
+    def sample_coral(self) -> Dict[str, Any]:
         """Sample a coral image randomly."""
         # Check if coral files are available
         if not self.coral_image_files or len(self.coral_image_files) == 0:
@@ -416,7 +416,8 @@ class Donuts_Fullframe(Dataset):
         # get the intra/extra flag
         intra = torch.tensor(state["intra"]).int()
 
-        band = torch.tensor(state["band"]).int().item()
+        band_tensor = torch.tensor(state["band"]).int()
+        band = band_tensor.item()
         img = torch.tensor(state["image_aligned"])
 
         # Get zernikes using noll_zk indexing
@@ -425,28 +426,42 @@ class Donuts_Fullframe(Dataset):
 
         # standardize all the inputs for the neural net
         if self.settings["transform"]:
-            img, fx, fy, intra, band = transform_inputs(  # type: ignore
-                img,
-                fx,
-                fy,
-                intra,
-                band,
+            # Convert tensors to numpy for transform_inputs
+            img_np = img.cpu().numpy() if isinstance(img, torch.Tensor) else img
+            fx_val = float(fx.item() if isinstance(fx, torch.Tensor) else fx)
+            fy_val = float(fy.item() if isinstance(fy, torch.Tensor) else fy)
+            intra_val = bool(intra.item() if isinstance(intra, torch.Tensor) else intra)
+            band_val = int(band_tensor.item() if isinstance(band_tensor, torch.Tensor) else band)
+            img_out, fx_out, fy_out, intra_out, band_out = transform_inputs(
+                img_np,
+                fx_val,
+                fy_val,
+                intra_val,
+                band_val,
             )
-
-        # convert everything to tensors
-        img = img.float()
-        # get meta data
-        fx = torch.FloatTensor([fx])
-        fy = torch.FloatTensor([fy])
-        intra = torch.FloatTensor([intra])  # type: ignore
-        band = torch.FloatTensor([band])  # type: ignore
+            # convert everything to tensors
+            img = torch.from_numpy(img_out).float() if isinstance(img_out, np.ndarray) else img_out.float()
+            # get meta data
+            fx_tensor = torch.FloatTensor([float(fx_out)])
+            fy_tensor = torch.FloatTensor([float(fy_out)])
+            intra_tensor = torch.FloatTensor([float(intra_out)])
+            band_tensor = torch.FloatTensor([float(band_out)])
+        else:
+            # convert everything to tensors if not transformed
+            img = img.float()
+            fx_tensor = torch.FloatTensor([float(fx.item() if isinstance(fx, torch.Tensor) else fx)])
+            fy_tensor = torch.FloatTensor([float(fy.item() if isinstance(fy, torch.Tensor) else fy)])
+            intra_tensor = torch.FloatTensor(
+                [float(intra.item() if isinstance(intra, torch.Tensor) else intra)]
+            )
+            band_tensor = torch.FloatTensor([float(band)])
         zernikes = zernikes.float()[0, :]
         coral_output = {
             "coral_image": img,
-            "coral_field_x": fx,
-            "coral_field_y": fy,
-            "coral_intrafocal": intra,
-            "coral_band": band,
+            "coral_field_x": fx_tensor,
+            "coral_field_y": fy_tensor,
+            "coral_intrafocal": intra_tensor,
+            "coral_band": band_tensor,
             "coral_zernikes": zernikes,
         }
         return coral_output
@@ -494,21 +509,41 @@ class Donuts_Fullframe(Dataset):
         else:
             zernikes = torch.tensor(state["zk_true"])[:, self.noll_zk]
 
-        band = torch.tensor(state["band"]).int().item()
+        band_tensor = torch.tensor(state["band"]).int()
+        band = band_tensor.item()
         img = torch.tensor(state["image_aligned"])
 
         # standardize all the inputs for the neural net
         if self.settings["transform"]:
-            img, fx, fy, intra, band = transform_inputs(  # type: ignore
-                img,
-                fx,
-                fy,
-                intra,
-                band,
+            # Convert tensors to numpy for transform_inputs
+            img_np = img.cpu().numpy() if isinstance(img, torch.Tensor) else img
+            fx_val = float(fx.item() if isinstance(fx, torch.Tensor) else fx)
+            fy_val = float(fy.item() if isinstance(fy, torch.Tensor) else fy)
+            intra_val = bool(intra.item() if isinstance(intra, torch.Tensor) else intra)
+            band_val = int(band_tensor.item() if isinstance(band_tensor, torch.Tensor) else band)
+            img_out, fx_out, fy_out, intra_out, band_out = transform_inputs(
+                img_np,
+                fx_val,
+                fy_val,
+                intra_val,
+                band_val,
             )
-
-        # convert everything to tensors
-        img = img.float()
+            # convert everything to tensors
+            img = torch.from_numpy(img_out).float() if isinstance(img_out, np.ndarray) else img_out.float()
+            # get meta data
+            fx_tensor = torch.FloatTensor([float(fx_out)])
+            fy_tensor = torch.FloatTensor([float(fy_out)])
+            intra_tensor = torch.FloatTensor([float(intra_out)])
+            band_tensor = torch.FloatTensor([float(band_out)])
+        else:
+            # convert everything to tensors if not transformed
+            img = img.float()
+            fx_tensor = torch.FloatTensor([float(fx.item() if isinstance(fx, torch.Tensor) else fx)])
+            fy_tensor = torch.FloatTensor([float(fy.item() if isinstance(fy, torch.Tensor) else fy)])
+            intra_tensor = torch.FloatTensor(
+                [float(intra.item() if isinstance(intra, torch.Tensor) else intra)]
+            )
+            band_tensor = torch.FloatTensor([float(band)])
 
         # Apply image shifting only in train mode and when adjustment_factor > 0
         if self.settings["mode"] == "train" and self.adjustment_factor > 0:
@@ -521,20 +556,14 @@ class Donuts_Fullframe(Dataset):
             offset_amount = [0, 0]
             offset_vec = np.array([0.0, 0.0])
             offset_r = np.array(0.0)
-
-        # get meta data
-        fx = torch.FloatTensor([fx])
-        fy = torch.FloatTensor([fy])
-        intra = torch.FloatTensor([intra])  # type: ignore
-        band = torch.FloatTensor([band])  # type: ignore
         zernikes = zernikes.float()[0, :]
 
         output = {
             "image": img,
-            "field_x": fx,
-            "field_y": fy,
-            "intrafocal": intra,
-            "band": band,
+            "field_x": fx_tensor,
+            "field_y": fy_tensor,
+            "intrafocal": intra_tensor,
+            "band": band_tensor,
             "zernikes": zernikes,
             "offset": offset_amount,
             "offset_vec": offset_vec,
@@ -710,20 +739,20 @@ class zernikeDataset(Dataset):
             / torch.tensor(loaded_data["snr"]).max()
         )
         # combine the field x/y
-        position = torch.concatenate([field_x, field_y], axis=-1).to(self.device)
+        position = torch.concatenate([field_x, field_y], dim=-1).to(self.device)
         # combine all into one array as an embedding
         # Remove singleton dimension for correct concatenation
         x = x.squeeze(1)  # [seq_length, 25]
         position = position.squeeze(1)  # [seq_length, 2]
         x_total = torch.cat([x, position, snr], dim=1)
         # control padding the sequence
-        idx = torch.randperm(x_total.size(0))
-        x_total = x_total[idx]
+        idx_tensor = torch.randperm(x_total.size(0))
+        x_total = x_total[idx_tensor]
         if x_total.shape[0] > self.max_seq_length:
             x_total = x_total[: self.max_seq_length, :]
         else:
             padding = torch.zeros((self.max_seq_length - x_total.shape[0], x_total.shape[1])).to(self.device)
-            x_total = torch.cat([x_total, padding], axis=0).to(self.device).float()
+            x_total = torch.cat([x_total, padding], dim=0).to(self.device).float()
         y = loaded_data["zk_true"]
         # return the stack of embedings, mean zernike estimate and the true zernike in PSF
         return x_total, mean[None, ...], y

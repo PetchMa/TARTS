@@ -2,10 +2,10 @@
 
 # Standard library imports
 import os
+import warnings
 from pathlib import Path
 from random import randint
-from typing import Dict, Optional, Tuple
-import warnings
+from typing import Any, Dict, Optional, Tuple, cast
 
 # Third-party imports
 import matplotlib.pyplot as plt
@@ -45,7 +45,7 @@ from .constants import (
 DONUT = DONUT_TEMPLATE
 
 
-def safe_yaml_load(file_path: str) -> Dict:
+def safe_yaml_load(file_path: str) -> Dict[str, Any]:
     """Safely load YAML files that may contain Python objects like tuples.
 
     Parameters
@@ -55,18 +55,24 @@ def safe_yaml_load(file_path: str) -> Dict:
 
     Returns
     -------
-    Dict
+    Dict[str, Any]
         Loaded YAML content as dictionary
     """
     try:
         # First try standard loader
         with open(file_path, "r") as f:
-            return yaml.safe_load(f)
+            result: Any = yaml.safe_load(f)
+            if result is not None and isinstance(result, dict):
+                return cast(Dict[str, Any], result)
+            return {}
     except yaml.YAMLError as e:
         # If that fails, try with FullLoader which can handle more Python objects
         try:
             with open(file_path, "r") as f:
-                return yaml.load(f, Loader=yaml.FullLoader)
+                result2: Any = yaml.load(f, Loader=yaml.FullLoader)
+                if result2 is not None and isinstance(result2, dict):
+                    return cast(Dict[str, Any], result2)
+                return {}
         except yaml.YAMLError:
             # If both fail, try to load and fix common issues
             with open(file_path, "r") as f:
@@ -78,7 +84,10 @@ def safe_yaml_load(file_path: str) -> Dict:
 
             # Try to load the cleaned content
             try:
-                return yaml.safe_load(content)
+                result3: Any = yaml.safe_load(content)
+                if result3 is not None and isinstance(result3, dict):
+                    return cast(Dict[str, Any], result3)
+                return {}
             except yaml.YAMLError:
                 # Last resort: return empty dict and warn
                 warnings.warn(f"Could not parse YAML file {file_path}: {e}")
@@ -443,7 +452,11 @@ def get_root() -> Path:
     if not GIT_AVAILABLE:
         # If git is not available, return current working directory
         return Path.cwd()
-    root = Path(git.Repo(".", search_parent_directories=True).working_tree_dir)
+    assert git is not None  # Type narrowing for mypy
+    repo_root = git.Repo(".", search_parent_directories=True).working_tree_dir
+    if repo_root is None:
+        return Path.cwd()
+    root = Path(repo_root)
     return root
 
 
@@ -707,9 +720,9 @@ def filter_SNR(images, alpha):
     if not keep_images:
         return np.array([[]]), np.array([[]]), np.array([[]])
     else:
-        keep_images = torch.concatenate(keep_images)
-        img_index = torch.tensor(img_index)
-        return keep_images, img_index, snr_list
+        keep_images_tensor = torch.concatenate(keep_images)
+        img_index_tensor = torch.tensor(img_index)
+        return keep_images_tensor, img_index_tensor, snr_list
 
 
 class CORALLoss(nn.Module):

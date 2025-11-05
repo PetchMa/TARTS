@@ -5,7 +5,7 @@ The method aligns inverse Gram matrices between source and target domains withou
 """
 
 # Standard library imports
-from typing import Dict, Tuple, Any
+from typing import Any, Dict, Tuple
 
 # Third-party imports
 import pytorch_lightning as pl
@@ -100,7 +100,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
         self.camType = CAMERA_TYPE
         self.inputShape = DEFAULT_INPUT_SHAPE
-        self.val_mRSSE = None
+        self.val_mRSSE: torch.Tensor | None = None
 
     def dare_gram_loss(self, features_source: torch.Tensor, features_target: torch.Tensor) -> torch.Tensor:
         """Compute DARE-GRAM loss between source and target features.
@@ -161,9 +161,9 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
         index_A = torch.argwhere(eigen_A <= T_A)
         if len(index_A) > 0:
-            index_A = index_A[-1][0]
+            index_A_val = int(index_A[-1][0].item())
         else:
-            index_A = 1
+            index_A_val = 1
 
         if eigen_B[1] > T:
             T_B = eigen_B[1]
@@ -172,11 +172,11 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
         index_B = torch.argwhere(eigen_B <= T_B)
         if len(index_B) > 0:
-            index_B = index_B[-1][0]
+            index_B_val = int(index_B[-1][0].item())
         else:
-            index_B = 1
+            index_B_val = 1
 
-        k = max(index_A, index_B)
+        k = max(index_A_val, index_B_val)
 
         # Ensure k is within valid range (avoid numerical issues)
         n_eigen = min(len(L_A), len(L_B))
@@ -330,10 +330,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
                 print(f"⚠️  DARE-GRAM loss computation failed: {e}")
                 dare_gram_loss = torch.tensor(0.0, device=self.device_val)
 
-        if self.val_mRSSE is not None:
-            scale_loss = self.exp_rise_flipped(self.val_mRSSE)
-        else:
-            scale_loss = self.exp_rise_flipped(mRSSE)
+        scale_loss = self.exp_rise_flipped(self.val_mRSSE if self.val_mRSSE is not None else mRSSE)
         total_loss = regression_loss + self.hparams.dare_gram_weight * scale_loss * dare_gram_loss
 
         return total_loss, mRSSE, dare_gram_loss
@@ -353,10 +350,10 @@ class WaveNetSystem_Coral(pl.LightningModule):
         loss, mRSSE, dare_gram_loss = self.calc_losses(batch, batch_idx, use_coral=False)
         self.log("val_loss", loss, sync_dist=True, prog_bar=True)
         self.log("val_mRSSE", mRSSE, sync_dist=True)
-        self.val_mRSSE = mRSSE
+        self.val_mRSSE = mRSSE.clone().detach()  # Store a copy to avoid tensor reference issues
         return loss
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
+    def configure_optimizers(self) -> Any:
         """Configure the optimizer."""
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=1e-4)
 

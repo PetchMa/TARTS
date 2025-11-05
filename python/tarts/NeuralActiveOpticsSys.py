@@ -3,6 +3,7 @@
 # Standard library imports
 import copy
 import os
+from typing import Any
 
 # Third-party imports
 import joblib
@@ -181,19 +182,30 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 print("🔧 Compiling submodels with torch.compile (GPU backend: default)...")
 
             try:
-                self.wavenet_model = torch.compile(self.wavenet_model, backend=compile_backend)
+                if compile_backend is not None:
+                    self.wavenet_model = torch.compile(self.wavenet_model, backend=compile_backend)
+                else:
+                    self.wavenet_model = torch.compile(self.wavenet_model)
                 print(f"✅ WaveNet compiled with backend: {compile_backend or 'default'}")
             except Exception as e:
                 print(f"⚠️  WaveNet compilation failed: {e}")
 
             try:
-                self.alignnet_model = torch.compile(self.alignnet_model, backend=compile_backend)
+                if compile_backend is not None:
+                    self.alignnet_model = torch.compile(self.alignnet_model, backend=compile_backend)
+                else:
+                    self.alignnet_model = torch.compile(self.alignnet_model)
                 print(f"✅ AlignNet compiled with backend: {compile_backend or 'default'}")
             except Exception as e:
                 print(f"⚠️  AlignNet compilation failed: {e}")
 
             try:
-                self.aggregatornet_model = torch.compile(self.aggregatornet_model, backend=compile_backend)
+                if compile_backend is not None:
+                    self.aggregatornet_model = torch.compile(
+                        self.aggregatornet_model, backend=compile_backend
+                    )
+                else:
+                    self.aggregatornet_model = torch.compile(self.aggregatornet_model)
                 print(f"✅ AggregatorNet compiled with backend: {compile_backend or 'default'}")
             except Exception as e:
                 print(f"⚠️  AggregatorNet compilation failed: {e}")
@@ -218,19 +230,28 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             print("🔧 Compiling submodels with torch.compile (GPU backend: default)...")
 
         try:
-            self.wavenet_model = torch.compile(self.wavenet_model, backend=compile_backend)
+            if compile_backend is not None:
+                self.wavenet_model = torch.compile(self.wavenet_model, backend=compile_backend)
+            else:
+                self.wavenet_model = torch.compile(self.wavenet_model)
             print(f"✅ WaveNet compiled with backend: {compile_backend or 'default'}")
         except Exception as e:
             print(f"⚠️  WaveNet compilation failed: {e}")
 
         try:
-            self.alignnet_model = torch.compile(self.alignnet_model, backend=compile_backend)
+            if compile_backend is not None:
+                self.alignnet_model = torch.compile(self.alignnet_model, backend=compile_backend)
+            else:
+                self.alignnet_model = torch.compile(self.alignnet_model)
             print(f"✅ AlignNet compiled with backend: {compile_backend or 'default'}")
         except Exception as e:
             print(f"⚠️  AlignNet compilation failed: {e}")
 
         try:
-            self.aggregatornet_model = torch.compile(self.aggregatornet_model, backend=compile_backend)
+            if compile_backend is not None:
+                self.aggregatornet_model = torch.compile(self.aggregatornet_model, backend=compile_backend)
+            else:
+                self.aggregatornet_model = torch.compile(self.aggregatornet_model)
             print(f"✅ AggregatorNet compiled with backend: {compile_backend or 'default'}")
         except Exception as e:
             print(f"⚠️  AggregatorNet compilation failed: {e}")
@@ -554,6 +575,8 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         fy = fy.to(device)
         SNR = SNR.to(device)
         self.centers = centers[keep_ind]
+        # These attributes can be either lists or tensors depending on context
+        # Suppress type checking for these dynamic attribute assignments
         self.fx = fx
         self.fy = fy
         self.intra = intra
@@ -582,14 +605,14 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             padding = torch.zeros(
                 (self.max_seq_length - embedded_features.shape[0], embedded_features.shape[1])
             ).to(self.device_val)
-            embedded_features = torch.cat([embedded_features, padding], axis=0).to(self.device_val).float()
+            embedded_features = torch.cat([embedded_features, padding], dim=0).to(self.device_val).float()
 
         embedded_features = embedded_features[None, ...]
 
         # Match training data mean computation:
         # Training data: zk_mean1 = torch.mean(zk_pred1, dim=0) / 1000
         # Since total_zernikes is already divided by 1000, we don't divide again
-        mean_zernike = torch.mean(total_zernikes, axis=0)
+        mean_zernike = torch.mean(total_zernikes, dim=0)
 
         # (OPTIONAL) Check the types
         if self.aggregator_on:
@@ -745,14 +768,14 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             padding = torch.zeros(
                 (self.max_seq_length - embedded_features.shape[0], embedded_features.shape[1])
             ).to(self.device_val)
-            embedded_features = torch.cat([embedded_features, padding], axis=0).to(self.device_val).float()
+            embedded_features = torch.cat([embedded_features, padding], dim=0).to(self.device_val).float()
 
         embedded_features = embedded_features[None, ...]
 
         # Match training data mean computation:
         # Training data: zk_mean1 = torch.mean(zk_pred1, dim=0) / 1000
         # Since total_zernikes is already divided by 1000, we don't divide again
-        mean_zernike = torch.mean(total_zernikes, axis=0)
+        mean_zernike = torch.mean(total_zernikes, dim=0)
 
         # (OPTIONAL) Check the types
         if self.aggregator_on:
@@ -826,7 +849,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         mRSSe = torch.sqrt(sse).mean()
         return mRSSe
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
+    def configure_optimizers(self) -> Any:
         """Configure the optimizer."""
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
 
@@ -916,9 +939,10 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 ]
             )
 
-        field_coords = torch.tensor(field_coords, dtype=torch.float32)
-        field_x = field_coords[:, 0].unsqueeze(1).to(self.device_val)[None, ...]
-        field_y = field_coords[:, 1].unsqueeze(1).to(self.device_val)[None, ...]
+        field_coords_tensor: torch.Tensor = torch.tensor(field_coords, dtype=torch.float32)
+        # Extract field coordinates and add batch dimension
+        field_x = field_coords_tensor[:, 0].unsqueeze(1).to(self.device_val)[None, ...]
+        field_y = field_coords_tensor[:, 1].unsqueeze(1).to(self.device_val)[None, ...]
 
         # Vectorized focal and band values - ensure correct shape for forward method
         focal_val = focal.expand(centers.shape[0], 1).to(self.device_val)[None, ...]
@@ -1004,9 +1028,10 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 ]
             )
 
-        field_coords = torch.tensor(field_coords, dtype=torch.float32)
-        field_x = field_coords[:, 0].unsqueeze(1).to(self.device_val)[None, ...]
-        field_y = field_coords[:, 1].unsqueeze(1).to(self.device_val)[None, ...]
+        field_coords_tensor: torch.Tensor = torch.tensor(field_coords, dtype=torch.float32)
+        # Extract field coordinates and add batch dimension
+        field_x = field_coords_tensor[:, 0].unsqueeze(1).to(self.device_val)[None, ...]
+        field_y = field_coords_tensor[:, 1].unsqueeze(1).to(self.device_val)[None, ...]
 
         # Vectorized focal and band values - ensure correct shape for forward method
         focal_val = focal.expand(centers.shape[0], 1).to(self.device_val)[None, ...]
@@ -1087,9 +1112,10 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 ]
             )
 
-        field_coords = torch.tensor(field_coords, dtype=torch.float32)
-        field_x = field_coords[:, 0].unsqueeze(1).to(self.device_val)[None, ...]
-        field_y = field_coords[:, 1].unsqueeze(1).to(self.device_val)[None, ...]
+        field_coords_tensor: torch.Tensor = torch.tensor(field_coords, dtype=torch.float32)
+        # Extract field coordinates and add batch dimension
+        field_x = field_coords_tensor[:, 0].unsqueeze(1).to(self.device_val)[None, ...]
+        field_y = field_coords_tensor[:, 1].unsqueeze(1).to(self.device_val)[None, ...]
 
         # Vectorized focal and band values - ensure correct shape for forward_align method
         focal_val = focal.expand(centers.shape[0], 1).to(self.device_val)[None, ...]

@@ -230,7 +230,7 @@ class AlignNetSystem(pl.LightningModule):
         self.log("val_mRSSE", mRSSE, sync_dist=True)
         return loss
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
+    def configure_optimizers(self) -> Any:
         """Configure the optimizer."""
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
 
