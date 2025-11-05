@@ -13,6 +13,7 @@ from astropy.table import Table
 from torch.utils.data import Dataset
 
 # Local/application imports
+from .constants import DEFAULT_NOLL_ZK, DEFAULT_TRAIN_FRACTION
 from .utils import shift_offcenter, transform_inputs
 
 
@@ -346,10 +347,10 @@ class Donuts_Fullframe(Dataset):
         if self.settings["mode"] == "train":
             # self.image_files = self.image_files[: int(0.1 * len(self.image_files))]
 
-            self.image_files = self.image_files[: int(0.5 * len(self.image_files))]
+            self.image_files = self.image_files[: int(DEFAULT_TRAIN_FRACTION * len(self.image_files))]
 
         if noll_zk is None:
-            noll_zk = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 27, 28]
+            noll_zk = DEFAULT_NOLL_ZK
         self.noll_zk = np.array(noll_zk) - 4
         self.adjustment_factor = adjustment_factor
 

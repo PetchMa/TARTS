@@ -11,6 +11,18 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
 # Local/application imports
+from .constants import (
+    BAND_MEAN,
+    BAND_STD,
+    BAND_VALUES_TENSOR,
+    CAMERA_TYPE,
+    DEFAULT_INPUT_SHAPE,
+    DEG_TO_RAD,
+    FIELD_MEAN,
+    FIELD_STD,
+    INTRA_MEAN,
+    INTRA_STD,
+)
 from .alignnet import AlignNet
 from .dataloader import Donuts
 
@@ -137,8 +149,8 @@ class AlignNetSystem(pl.LightningModule):
 
         # define some parameters that will be accessed by
         # the MachineLearningAlgorithm in ts_wep
-        self.camType = "LsstCam"
-        self.inputShape = (160, 160)
+        self.camType = CAMERA_TYPE
+        self.inputShape = DEFAULT_INPUT_SHAPE
 
     def predict_step(self, batch: Dict[str, Any], batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and return with truth."""
@@ -243,12 +255,7 @@ class AlignNetSystem(pl.LightningModule):
         Returns:
             torch.Tensor: A tensor of shape (batch_size, 1) with band values.
         """
-        # Create a tensor with band values
-        band_values = torch.tensor([[0.3671], [0.4827], [0.6223], [0.7546], [0.8691], [0.9712]]).to(
-            self.device_val
-        )
-
-        return band_values[bands]
+        return BAND_VALUES_TENSOR.to(self.device_val)[bands]
 
     def rescale_image_batched(self, data: torch.Tensor) -> torch.Tensor:
         """Rescale batched image data with normalization.
@@ -311,25 +318,19 @@ class AlignNetSystem(pl.LightningModule):
         img = self.rescale_image_batched(img)
 
         # convert angles to radians
-        fx *= torch.pi / 180
-        fy *= torch.pi / 180
+        fx *= DEG_TO_RAD
+        fy *= DEG_TO_RAD
 
         # normalize angles
-        field_mean = 0.000
-        field_std = 0.021
-        fx = (fx - field_mean) / field_std
-        fy = (fy - field_mean) / field_std
+        fx = (fx - FIELD_MEAN) / FIELD_STD
+        fy = (fy - FIELD_MEAN) / FIELD_STD
 
         # normalize the intrafocal flags
-        intra_mean = 0.5
-        intra_std = 0.5
-        focalFlag = (focalFlag - intra_mean) / intra_std
+        focalFlag = (focalFlag - INTRA_MEAN) / INTRA_STD
 
         band = self.get_band_values(band)[:, 0]
         # normalize the wavelength
-        band_mean = 0.710
-        band_std = 0.174
-        band = (band - band_mean) / band_std
+        band = (band - BAND_MEAN) / BAND_STD
 
         # predict zernikes in microns
         offset = self.alignnet(img, fx, fy, focalFlag, band)

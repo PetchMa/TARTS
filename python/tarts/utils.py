@@ -27,22 +27,22 @@ except ImportError:
     git = None
 
 # Local/application imports
-from .KERNEL import CUTOUT as DONUT
+from .constants import (
+    BAND_MAP,
+    BAND_STR_INT,
+    BAND_MEAN,
+    BAND_STD,
+    DONUT_TEMPLATE,
+    FIELD_MEAN,
+    FIELD_POSITIONS,
+    FIELD_STD,
+    INTRA_MEAN,
+    INTRA_STD,
+    LSST_AVAILABLE,
+)
 
-# from lsst.summit.utils import ConsDbClient
-
-LSST_AVAILABLE = True
-
-MAP_DETECTOR_TO_NUMBER = {
-    "R00_SW0": 191,
-    "R00_SW1": 192,
-    "R04_SW0": 195,
-    "R04_SW1": 196,
-    "R40_SW0": 199,
-    "R40_SW1": 200,
-    "R44_SW0": 203,
-    "R44_SW1": 204,
-}
+# Alias for backward compatibility
+DONUT = DONUT_TEMPLATE
 
 
 def safe_yaml_load(file_path: str) -> Dict:
@@ -195,28 +195,9 @@ class LearningRateThresholdCallback(pl.Callback):
             trainer.should_stop = True
 
 
-BAND_MAP = {  # type: ignore
-    0: 0.3671,
-    1: 0.4827,
-    2: 0.6223,
-    3: 0.7546,
-    4: 0.8691,
-    5: 0.9712,
-}
-BAND_str_int = {  # type: ignore
-    "u": 0,
-    "g": 1,
-    "r": 2,
-    "i": 3,
-    "z": 4,
-    "y": 5,
-}
-FIELD = {
-    "R00": {"fieldx": -1.1897, "fieldy": -1.1897},
-    "R04": {"fieldx": -1.1897, "fieldy": 1.1897},
-    "R40": {"fieldx": 1.1897, "fieldy": -1.1897},
-    "R44": {"fieldx": 1.1897, "fieldy": 1.1897},
-}
+# Alias for backward compatibility
+BAND_str_int = BAND_STR_INT
+FIELD = FIELD_POSITIONS
 
 
 def convert_zernikes(zernikes: torch.Tensor) -> torch.Tensor:
@@ -437,23 +418,17 @@ def transform_inputs(
     image = (image - image_mean) / image_std
 
     # normalize angles
-    field_mean = 0.000
-    field_std = 0.021
-    fx = (fx - field_mean) / field_std
-    fy = (fy - field_mean) / field_std
+    fx = (fx - FIELD_MEAN) / FIELD_STD
+    fy = (fy - FIELD_MEAN) / FIELD_STD
 
     # normalize the intrafocal flags
-    intra_mean = 0.5
-    intra_std = 0.5
-    intra = (intra - intra_mean) / intra_std  # type: ignore
+    intra = (intra - INTRA_MEAN) / INTRA_STD  # type: ignore
 
     # get the effective wavelength in microns
     band = BAND_MAP[band]  # type: ignore
 
     # normalize the wavelength
-    band_mean = 0.710
-    band_std = 0.174
-    band = (band - band_mean) / band_std  # type: ignore
+    band = (band - BAND_MEAN) / BAND_STD  # type: ignore
 
     return image, fx, fy, intra, band
 
@@ -695,7 +670,7 @@ def single_conv(image, device="cuda"):
     """
     device = image.device
     # donut = np.loadtxt("/home/peterma/research/Rubin_LSST/Rubin_AO_ML/training/extra_template-R22_S11.txt")
-    donut = DONUT
+    donut = DONUT_TEMPLATE
     donut = donut[40:200, 40:200].float().to(device)
     not_donut = (1 - donut).bool().float().to(device)
     donut_mean = torch.mean(image * donut)

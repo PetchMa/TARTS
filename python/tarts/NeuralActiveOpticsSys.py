@@ -20,10 +20,10 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 # Local/application imports
 from .aggregatornet import AggregatorNet
+from .constants import MAP_DETECTOR_TO_NUMBER
 from .lightning_alignnet import AlignNetSystem
 from .lightning_wavenet import WaveNetSystem
 from .utils import (
-    MAP_DETECTOR_TO_NUMBER,
     batched_crop,
     convert_zernikes_deploy,
     get_centers,

@@ -11,6 +11,17 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
 # Local/application imports
+from .constants import (
+    BAND_MEAN,
+    BAND_STD,
+    CAMERA_TYPE,
+    DEFAULT_INPUT_SHAPE,
+    DEG_TO_RAD,
+    FIELD_MEAN,
+    FIELD_STD,
+    INTRA_MEAN,
+    INTRA_STD,
+)
 from .dataloader import Donuts, Donuts_Fullframe
 from .utils import convert_zernikes_deploy
 from .wavenet import WaveNet
@@ -187,8 +198,8 @@ class WaveNetSystem(pl.LightningModule):
 
         # define some parameters that will be accessed by
         # the MachineLearningAlgorithm in ts_wep
-        self.camType = "LsstCam"
-        self.inputShape = (160, 160)
+        self.camType = CAMERA_TYPE
+        self.inputShape = DEFAULT_INPUT_SHAPE
 
     def predict_step(self, batch: Dict[str, Any], batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and return with truth."""
@@ -364,26 +375,20 @@ class WaveNetSystem(pl.LightningModule):
         img = self.rescale_image_batched(img)
 
         # convert angles to radians
-        fx *= torch.pi / 180
-        fy *= torch.pi / 180
+        fx *= DEG_TO_RAD
+        fy *= DEG_TO_RAD
 
         # normalize angles
-        field_mean = 0.000
-        field_std = 0.021
-        fx = (fx - field_mean) / field_std
-        fy = (fy - field_mean) / field_std
+        fx = (fx - FIELD_MEAN) / FIELD_STD
+        fy = (fy - FIELD_MEAN) / FIELD_STD
 
         # normalize the intrafocal flags
-        intra_mean = 0.5
-        intra_std = 0.5
-        focalFlag = (focalFlag - intra_mean) / intra_std
+        focalFlag = (focalFlag - INTRA_MEAN) / INTRA_STD
 
         band = self.get_band_values(band)[:, 0]
         # U G R I Z Y
         # normalize the wavelength
-        band_mean = 0.710
-        band_std = 0.174
-        band = (band - band_mean) / band_std
+        band = (band - BAND_MEAN) / BAND_STD
 
         # predict zernikes in microns
         zk_pred = self.wavenet(img, fx, fy, focalFlag, band)

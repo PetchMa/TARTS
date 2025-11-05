@@ -15,6 +15,19 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 # Local/application imports
+from .constants import (
+    BAND_MEAN,
+    BAND_STD,
+    BAND_VALUES_TENSOR,
+    CAMERA_TYPE,
+    DEFAULT_INPUT_SHAPE,
+    DEG_TO_RAD,
+    FIELD_MEAN,
+    FIELD_STD,
+    INTRA_MEAN,
+    INTRA_STD,
+    ZERNIKE_SCALE_FACTOR,
+)
 from .utils import convert_zernikes_deploy
 from .wavenet import WaveNet
 
@@ -85,8 +98,8 @@ class WaveNetSystem_Coral(pl.LightningModule):
             pretrained=pretrained,
         )
 
-        self.camType = "LsstCam"
-        self.inputShape = (160, 160)
+        self.camType = CAMERA_TYPE
+        self.inputShape = DEFAULT_INPUT_SHAPE
         self.val_mRSSE = None
 
     def dare_gram_loss(self, features_source: torch.Tensor, features_target: torch.Tensor) -> torch.Tensor:
@@ -361,11 +374,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
     def get_band_values(self, bands: torch.Tensor) -> torch.Tensor:
         """Retrieve band values for a batch of indices."""
-        band_values = torch.tensor([[0.3671], [0.4827], [0.6223], [0.7546], [0.8691], [0.9712]]).to(
-            self.device_val
-        )
-
-        return band_values[bands]
+        return BAND_VALUES_TENSOR.to(self.device_val)[bands]
 
     def rescale_image_batched(self, data):
         """Rescale batched image data with normalization."""
@@ -396,25 +405,19 @@ class WaveNetSystem_Coral(pl.LightningModule):
         """Predict zernikes for production."""
         img = self.rescale_image_batched(img)
 
-        fx *= torch.pi / 180
-        fy *= torch.pi / 180
+        fx *= DEG_TO_RAD
+        fy *= DEG_TO_RAD
 
-        field_mean = 0.000
-        field_std = 0.021
-        fx = (fx - field_mean) / field_std
-        fy = (fy - field_mean) / field_std
+        fx = (fx - FIELD_MEAN) / FIELD_STD
+        fy = (fy - FIELD_MEAN) / FIELD_STD
 
-        intra_mean = 0.5
-        intra_std = 0.5
-        focalFlag = (focalFlag - intra_mean) / intra_std
+        focalFlag = (focalFlag - INTRA_MEAN) / INTRA_STD
 
         band = self.get_band_values(band)[:, 0]
-        band_mean = 0.710
-        band_std = 0.174
-        band = (band - band_mean) / band_std
+        band = (band - BAND_MEAN) / BAND_STD
 
         zk_pred = self.wavenet(img, fx, fy, focalFlag, band)
 
-        zk_pred *= 1_000
+        zk_pred *= ZERNIKE_SCALE_FACTOR
 
         return zk_pred
