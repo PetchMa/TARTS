@@ -1,93 +1,13 @@
 """Neural network to predict zernike coefficients from donut images and positions."""
 
+# Third-party imports
+import timm
 import torch
 from torch import nn
 from torchvision import models as cnn_models
-import timm
+
+# Local/application imports
 from .KERNEL import CUTOUT as DONUT
-# import torch.nn.functional as F_  # Unused import
-
-# # Global cache for Gaussian kernels
-# _GAUSSIAN_KERNEL_CACHE = {}
-
-# def get_gaussian_kernel2d(kernel_size: int, sigma: float, device=None, dtype=torch.float32) -> torch.Tensor:
-#     """
-#     Returns a 2D Gaussian kernel as a [1, 1, k, k] tensor for depthwise conv.
-#     Uses caching to avoid recomputation.
-
-#     Parameters:
-#     - kernel_size (int): Must be odd.
-#     - sigma (float): Standard deviation of Gaussian.
-
-#     Returns:
-#     - kernel (torch.Tensor): Shape [1, 1, k, k].
-#     """
-#     if kernel_size % 2 == 0:
-#         raise ValueError("Kernel size must be odd")
-
-#     # Create cache key
-#     cache_key = (kernel_size, sigma, device, dtype)
-
-#     if cache_key in _GAUSSIAN_KERNEL_CACHE:
-#         return _GAUSSIAN_KERNEL_CACHE[cache_key]
-
-#     ax = torch.arange(kernel_size, device=device, dtype=dtype) - kernel_size // 2
-#     xx, yy = torch.meshgrid(ax, ax, indexing='ij')
-#     kernel = torch.exp(-(xx**2 + yy**2) / (2 * sigma**2))
-#     kernel /= kernel.sum()
-#     kernel = kernel.unsqueeze(0).unsqueeze(0)  # [1, 1, k, k]
-
-#     # Cache the kernel
-#     _GAUSSIAN_KERNEL_CACHE[cache_key] = kernel
-#     return kernel
-
-# def apply_gaussian_blur(image: torch.Tensor, kernel_size: int, sigma: float, donut_mask=None) -> torch.Tensor:
-#     """
-#     Apply 2D Gaussian blur to a 4D PyTorch tensor [B, C, H, W].
-#     Optimized version with kernel caching and reduced memory operations.
-
-#     Parameters:
-#     - image: torch.Tensor - Input image tensor [B, C, H, W]
-#     - kernel_size: int - Size of Gaussian kernel
-#     - sigma: float - Standard deviation of Gaussian
-#     - donut_mask: torch.Tensor, optional - Pre-computed donut mask to avoid repeated computation
-
-#     Returns:
-#     - torch.Tensor: Blurred image of same shape as input
-#     """
-#     if image.dim() != 4:
-#         raise ValueError("Input must be a 4D tensor [B, C, H, W]")
-
-#     B, C, H, W = image.shape
-#     device = image.device
-#     dtype = image.dtype
-
-#     # Get cached kernel
-#     kernel = get_gaussian_kernel2d(kernel_size, sigma, device, dtype)  # [1, 1, k, k]
-#     kernel = kernel.repeat(C, 1, 1, 1)  # [C, 1, k, k] for depthwise conv
-
-#     # Pad to keep image size
-#     padding = kernel_size // 2
-
-#     # Use provided donut mask or compute it
-#     if donut_mask is None:
-#         donut = DONUT[40:200, 40:200].float().to(device)
-#     else:
-#         donut = donut_mask
-
-#     # Optimize the operations: combine operations to reduce memory usage
-#     # Instead of: back = image - donut * image
-#     # Use: back = image * (1 - donut)
-#     back = image * (1 - donut)
-
-#     # Apply blur
-#     blurred = F_.conv2d(image, kernel, padding=padding, groups=C)
-
-#     # Combine operations: blurred = donut * blurred + back
-#     # This reduces one memory allocation
-#     result = donut * blurred + back
-
-#     return result
 
 
 class WaveNet(nn.Module):
@@ -99,7 +19,7 @@ class WaveNet(nn.Module):
         freeze_cnn: bool = False,
         n_predictor_layers: tuple = (256,),
         n_zernikes: int = 25,
-        device='cuda',
+        device="cuda",
         pretrained: bool = True,
     ) -> None:
         """Create the WaveNet.
@@ -107,8 +27,9 @@ class WaveNet(nn.Module):
         Parameters
         ----------
         cnn_model: str, default="resnet18"
-            The name of the pre-trained CNN model from torchvision or timm.
-            Supports both torchvision models (e.g., "resnet18") and timm models (e.g., "mobilenetv4_conv_small").
+            The name of the pre-trained CNN model from torchvision or timm. Supports
+            both torchvision models (e.g., "resnet18") and timm models
+            (e.g., "mobilenetv4_conv_small").
         freeze_cnn: bool, default=False
             Whether to freeze the CNN weights.
         n_predictor_layers: tuple, default=(256)
@@ -150,7 +71,7 @@ class WaveNet(nn.Module):
                 nn.Linear(n_features, n_predictor_layers[0]),
                 nn.BatchNorm1d(n_predictor_layers[0]),
                 nn.ReLU(),
-                nn.Dropout(p=0.2)
+                nn.Dropout(p=0.2),
             ]
 
             # add any additional layers
@@ -158,7 +79,7 @@ class WaveNet(nn.Module):
                 layers += [
                     nn.Linear(n_predictor_layers[i - 1], n_predictor_layers[i]),
                     nn.BatchNorm1d(n_predictor_layers[i]),
-                    nn.ReLU()
+                    nn.ReLU(),
                 ]
 
             # add the final layer
@@ -170,7 +91,10 @@ class WaveNet(nn.Module):
         self.predictor = nn.Sequential(*layers).to(self.device_val)
 
         # Cache the donut mask to avoid repeated computation
-        self._donut_mask = None
+        self._donut_mask: torch.Tensor | None = None
+
+        # Initialize predictor_features for OOD detection
+        self.predictor_features: torch.Tensor | None = None
 
         # Ensure all model parameters are in float32 to avoid dtype mismatches
         self.float()
@@ -188,11 +112,15 @@ class WaveNet(nn.Module):
         # Check if it's a timm model (MobileNetV4, etc.)
         if cnn_model.startswith("mobilenetv4") or cnn_model in timm.list_models():
             # Load from timm
-            self.cnn = timm.create_model(
-                cnn_model,
-                pretrained=pretrained,
-                num_classes=0  # This removes the classifier and returns pooled features
-            ).to(self.device_val).float()  # Explicitly convert to float32
+            self.cnn = (
+                timm.create_model(
+                    cnn_model,
+                    pretrained=pretrained,
+                    num_classes=0,  # This removes the classifier and returns pooled features
+                )
+                .to(self.device_val)
+                .float()
+            )  # Explicitly convert to float32
             self.is_timm_model = True
 
             # Get actual feature dimension by doing a dummy forward pass
@@ -210,7 +138,10 @@ class WaveNet(nn.Module):
         else:
             # Load from torchvision
             weights_param = "DEFAULT" if pretrained else None
-            self.cnn = getattr(cnn_models, cnn_model)(weights=weights_param).to(self.device_val).float()  # Explicitly convert to float32
+            if not hasattr(cnn_models, cnn_model):
+                raise ValueError(f"Unknown torchvision model: {cnn_model}")
+            model_fn = getattr(cnn_models, cnn_model)
+            self.cnn = model_fn(weights=weights_param).to(self.device_val).float()
             # Get feature dimension
             self.n_cnn_features = self.cnn.fc.in_features
             self.is_timm_model = False
@@ -222,12 +153,14 @@ class WaveNet(nn.Module):
             pass
         else:
             # For torchvision models, remove the final fully connected layer
-            if hasattr(self.cnn, 'fc'):
-                self.cnn.fc = nn.Identity()
+            # torchvision models always have fc layer
+            self.cnn.fc = nn.Identity()
 
     def _get_donut_mask(self, device):
         """Get cached donut mask."""
-        if self._donut_mask is None or self._donut_mask.device != device:
+        if self._donut_mask is None:
+            self._donut_mask = DONUT[40:200, 40:200].float().to(device)
+        elif self._donut_mask.device != device:
             self._donut_mask = DONUT[40:200, 40:200].float().to(device)
         return self._donut_mask
 
@@ -237,15 +170,12 @@ class WaveNet(nn.Module):
         image = image[..., None, :, :]
 
         # Get the number of input channels required by the CNN
-        if hasattr(self.cnn, 'conv1'):
-            # torchvision models (ResNet, etc.)
-            n_channels = self.cnn.conv1.in_channels
-        elif hasattr(self.cnn, 'conv_stem'):
+        if self.is_timm_model:
             # timm models (MobileNet, etc.)
             n_channels = self.cnn.conv_stem.in_channels
         else:
-            # Default to 3 channels if we can't determine
-            n_channels = 3
+            # torchvision models (ResNet, etc.)
+            n_channels = self.cnn.conv1.in_channels
 
         # duplicate image for each channel
         image = image.repeat_interleave(n_channels, dim=-3)

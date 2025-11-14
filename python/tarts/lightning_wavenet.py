@@ -1,11 +1,27 @@
 """Wrapping everything for WaveNet in Pytorch Lightning."""
 
-from typing import Any, Tuple
+# Standard library imports
+from typing import Any, Dict, Tuple
+
+# Third-party imports
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
+
+# Local/application imports
+from .constants import (
+    BAND_MEAN,
+    BAND_STD,
+    CAMERA_TYPE,
+    DEFAULT_INPUT_SHAPE,
+    DEG_TO_RAD,
+    FIELD_MEAN,
+    FIELD_STD,
+    INTRA_MEAN,
+    INTRA_STD,
+)
 from .dataloader import Donuts, Donuts_Fullframe
 from .utils import convert_zernikes_deploy
 from .wavenet import WaveNet
@@ -45,9 +61,7 @@ class DonutLoader(pl.LightningDataModule):
         self.save_hyperparameters()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def _build_loader(
-        self, mode: str, shuffle: bool = False, drop_last: bool = True
-    ) -> DataLoader:
+    def _build_loader(self, mode: str, shuffle: bool = False, drop_last: bool = True) -> DataLoader:
         """Build a DataLoader."""
         return DataLoader(
             Donuts(mode=mode, **self.hparams),
@@ -105,9 +119,7 @@ class DonutLoader_Fullframe(pl.LightningDataModule):
         super().__init__()
         self.save_hyperparameters()
 
-    def _build_loader(
-        self, mode: str, shuffle: bool = False, drop_last: bool = True
-    ) -> DataLoader:
+    def _build_loader(self, mode: str, shuffle: bool = False, drop_last: bool = True) -> DataLoader:
         """Build a DataLoader."""
         return DataLoader(
             Donuts_Fullframe(mode=mode, **self.hparams),
@@ -144,7 +156,7 @@ class WaveNetSystem(pl.LightningModule):
         alpha: float = 0,
         lr: float = 1e-3,
         lr_schedule: bool = False,
-        device: str = 'cuda',
+        device: str = "cuda",
         pretrained: bool = False,
     ) -> None:
         """Create the WaveNet.
@@ -152,8 +164,9 @@ class WaveNetSystem(pl.LightningModule):
         Parameters
         ----------
         cnn_model: str, default="resnet34"
-            The name of the pre-trained CNN model from torchvision or timm.
-            Supports both torchvision models (e.g., "resnet34") and timm models (e.g., "mobilenetv4_conv_small").
+            The name of the pre-trained CNN model from torchvision or timm. Supports
+            both torchvision models (e.g., "resnet34") and timm models
+            (e.g., "mobilenetv4_conv_small").
         freeze_cnn: bool, default=False
             Whether to freeze the CNN weights.
         n_predictor_layers: tuple, default=(256)
@@ -185,12 +198,10 @@ class WaveNetSystem(pl.LightningModule):
 
         # define some parameters that will be accessed by
         # the MachineLearningAlgorithm in ts_wep
-        self.camType = "LsstCam"
-        self.inputShape = (160, 160)
+        self.camType = CAMERA_TYPE
+        self.inputShape = DEFAULT_INPUT_SHAPE
 
-    def predict_step(
-        self, batch: dict, batch_idx: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def predict_step(self, batch: Dict[str, Any], batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and return with truth."""
         # unpack data from the dictionary
         img = batch["image"]
@@ -206,7 +217,7 @@ class WaveNetSystem(pl.LightningModule):
 
         return zk_pred, zk_true
 
-    def calc_losses(self, batch: dict, batch_idx: int) -> tuple:
+    def calc_losses(self, batch: Dict[str, Any], batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and calculate the losses.
 
         The two losses considered are:
@@ -233,7 +244,9 @@ class WaveNetSystem(pl.LightningModule):
 
         return loss, mRSSE
 
-    def calc_losses_pure(self, batch: dict, batch_idx: int) -> tuple:
+    def calc_losses_pure(
+        self, batch: Dict[str, Any], batch_idx: int
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Predict Zernikes and calculate the losses.
 
         The two losses considered are:
@@ -260,7 +273,7 @@ class WaveNetSystem(pl.LightningModule):
 
         return loss, mRSSE, zk_pred, zk_true
 
-    def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
+    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Execute training step on a batch."""
         loss, mRSSE = self.calc_losses(batch, batch_idx)
         self.log("train_loss", loss, sync_dist=True, prog_bar=True)
@@ -268,7 +281,7 @@ class WaveNetSystem(pl.LightningModule):
 
         return loss
 
-    def validation_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Execute validation step on a batch."""
         loss, mRSSE = self.calc_losses(batch, batch_idx)
         self.log("val_loss", loss, sync_dist=True, prog_bar=True)
@@ -276,7 +289,7 @@ class WaveNetSystem(pl.LightningModule):
 
         return loss
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
+    def configure_optimizers(self) -> Any:
         """Configure the optimizer."""
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=1e-4)
         # optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
@@ -303,14 +316,9 @@ class WaveNetSystem(pl.LightningModule):
             torch.Tensor: A tensor of shape (batch_size, 1) with band values.
         """
         # Create a tensor with band values
-        band_values = torch.tensor([
-            [0.3671],
-            [0.4827],
-            [0.6223],
-            [0.7546],
-            [0.8691],
-            [0.9712]
-        ]).to(self.device_val)
+        band_values = torch.tensor([[0.3671], [0.4827], [0.6223], [0.7546], [0.8691], [0.9712]]).to(
+            self.device_val
+        )
 
         return band_values[bands]
 
@@ -367,26 +375,20 @@ class WaveNetSystem(pl.LightningModule):
         img = self.rescale_image_batched(img)
 
         # convert angles to radians
-        fx *= torch.pi / 180
-        fy *= torch.pi / 180
+        fx *= DEG_TO_RAD
+        fy *= DEG_TO_RAD
 
         # normalize angles
-        field_mean = 0.000
-        field_std = 0.021
-        fx = (fx - field_mean) / field_std
-        fy = (fy - field_mean) / field_std
+        fx = (fx - FIELD_MEAN) / FIELD_STD
+        fy = (fy - FIELD_MEAN) / FIELD_STD
 
         # normalize the intrafocal flags
-        intra_mean = 0.5
-        intra_std = 0.5
-        focalFlag = (focalFlag - intra_mean) / intra_std
+        focalFlag = (focalFlag - INTRA_MEAN) / INTRA_STD
 
         band = self.get_band_values(band)[:, 0]
         # U G R I Z Y
         # normalize the wavelength
-        band_mean = 0.710
-        band_std = 0.174
-        band = (band - band_mean) / band_std
+        band = (band - BAND_MEAN) / BAND_STD
 
         # predict zernikes in microns
         zk_pred = self.wavenet(img, fx, fy, focalFlag, band)
