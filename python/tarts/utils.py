@@ -8,9 +8,14 @@ from pathlib import Path
 from random import randint
 from typing import Any, Dict, Optional, Tuple, cast
 
+import numpy as np
+from numpy.linalg import svd
+
+from lsst.ts.ofc import SensitivityMatrix
+from lsst.ts.ofc.utils.ofc_data_helpers import get_intrinsic_zernikes
+
 # Third-party imports
 import matplotlib.pyplot as plt
-import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
@@ -627,6 +632,248 @@ def shift_offcenter(frame, adjust=0, return_offset=True):
         return backplate[160 : 160 * 2, 160 : 160 * 2]
 
 
+def compute_2d_fft_torch(image, pixel_scale=1.0):
+    """Compute 2D FFT of an image.
+
+    Parameters
+    ----------
+    image : torch.Tensor
+        Input image as a PyTorch tensor. Can be 2D or 3D (will squeeze if 3D).
+    pixel_scale : float, default=1.0
+        Pixel scale for frequency computation.
+
+    Returns
+    -------
+    tuple
+        (fshift, kx, ky, magnitude_spectrum, phase_spectrum)
+        - fshift: Shifted FFT
+        - kx, ky: Frequency grids
+        - magnitude_spectrum: Log-magnitude spectrum
+        - phase_spectrum: Phase spectrum
+    """
+    image = torch.as_tensor(image, dtype=torch.float32)
+    if image.dim() == 3:
+        image = image.squeeze(0)
+
+    f = torch.fft.fft2(image)
+    fshift = torch.fft.fftshift(f)
+
+    ny, nx = image.shape
+    kx = torch.fft.fftshift(torch.fft.fftfreq(nx, d=pixel_scale))
+    ky = torch.fft.fftshift(torch.fft.fftfreq(ny, d=pixel_scale))
+
+    magnitude_spectrum = torch.log1p(torch.abs(fshift))
+    phase_spectrum = torch.angle(fshift)
+
+    return fshift, kx, ky, magnitude_spectrum, phase_spectrum
+
+
+def inverse_2d_fft_torch(fshift):
+    """Inverse 2D FFT.
+
+    Parameters
+    ----------
+    fshift : torch.Tensor
+        Shifted FFT coefficients.
+
+    Returns
+    -------
+    torch.Tensor
+        Reconstructed real-space image.
+    """
+    f_ishift = torch.fft.ifftshift(fshift)
+    reconstructed = torch.real(torch.fft.ifft2(f_ishift))
+    return reconstructed
+
+
+def apply_k_filter_torch(fshift, kx, ky, kmin=0.0, kmax=float("inf"), sigma_frac=0.1):
+    """Apply smooth circular band-pass filter in Fourier space.
+
+    Parameters
+    ----------
+    fshift : torch.Tensor
+        Shifted FFT coefficients.
+    kx : torch.Tensor
+        Frequency grid in x direction.
+    ky : torch.Tensor
+        Frequency grid in y direction.
+    kmin : float, default=0.0
+        Minimum frequency magnitude to keep.
+    kmax : float, default=float("inf")
+        Maximum frequency magnitude to keep.
+    sigma_frac : float, default=0.1
+        Fractional Gaussian width for smooth filter edges.
+
+    Returns
+    -------
+    tuple
+        (f_filtered, weight)
+        - f_filtered: Filtered FFT coefficients
+        - weight: Filter weight mask
+    """
+    device = fshift.device
+    KX, KY = torch.meshgrid(kx.to(device), ky.to(device), indexing="xy")
+    K_mag = torch.sqrt(KX**2 + KY**2)
+    kmax_valid = torch.max(K_mag)
+    kmax = min(kmax, kmax_valid.item())
+
+    sigma = sigma_frac * (kmax - kmin)
+    sigma = max(sigma, 1e-6)
+
+    low_edge = 1 / (1 + torch.exp(-(K_mag - kmin) / sigma))
+    high_edge = 1 / (1 + torch.exp((K_mag - kmax) / sigma))
+    weight = low_edge * high_edge
+
+    f_filtered = fshift * weight
+    return f_filtered, weight
+
+
+def augment_data_torch(sim, real, scale=0.1, kmin=0.1):
+    """Augment simulation image by injecting randomized high-frequency structure from real image.
+
+    This function extracts high-frequency components from a real (coral) image, randomizes
+    their phase, and injects them into the simulation image in regions where the simulation
+    has signal (above noise threshold).
+
+    Parameters
+    ----------
+    sim : torch.Tensor
+        Simulation image (2D tensor).
+    real : torch.Tensor
+        Real/coral image (2D tensor) to extract high-frequency structure from.
+        Should have the same shape as sim.
+    scale : float, default=0.1
+        Scaling factor for the injected high-frequency structure.
+    kmin : float, default=0.1
+        Minimum frequency magnitude to extract from real image.
+
+    Returns
+    -------
+    torch.Tensor
+        Augmented simulation image with injected high-frequency structure.
+    """
+    # Ensure images are 2D and on the same device
+    sim = torch.as_tensor(sim, dtype=torch.float32)
+    real = torch.as_tensor(real, dtype=torch.float32)
+
+    # Remove extra dimensions if present
+    while sim.dim() > 2:
+        sim = sim.squeeze(0)
+    while real.dim() > 2:
+        real = real.squeeze(0)
+
+    # Ensure real image has same shape as sim (crop or pad if needed)
+    if real.shape != sim.shape:
+        # Crop or pad to match sim shape
+        if real.shape[0] > sim.shape[0]:
+            real = real[: sim.shape[0], :]
+        elif real.shape[0] < sim.shape[0]:
+            pad_h = sim.shape[0] - real.shape[0]
+            # F.pad format for 2D: (pad_left, pad_right, pad_top, pad_bottom)
+            # Add batch and channel dims for F.pad, then remove them
+            real = (
+                F.pad(real.unsqueeze(0).unsqueeze(0), (0, 0, 0, pad_h), mode="reflect").squeeze(0).squeeze(0)
+            )
+        if real.shape[1] > sim.shape[1]:
+            real = real[:, : sim.shape[1]]
+        elif real.shape[1] < sim.shape[1]:
+            pad_w = sim.shape[1] - real.shape[1]
+            # F.pad format for 2D: (pad_left, pad_right, pad_top, pad_bottom)
+            real = (
+                F.pad(real.unsqueeze(0).unsqueeze(0), (0, pad_w, 0, 0), mode="reflect").squeeze(0).squeeze(0)
+            )
+
+    device = sim.device
+    real = real.to(device)
+
+    # --- FFT of real image ---
+    fshift_real, kx, ky, mag_real, _ = compute_2d_fft_torch(real)
+    f_high, _ = apply_k_filter_torch(fshift_real, kx, ky, kmin=kmin, kmax=float("inf"))
+
+    # --- Randomize phase of high-frequency component ---
+    random_phase = torch.exp(1j * 2 * torch.pi * torch.rand(f_high.shape, device=device, dtype=torch.float32))
+    f_high_randomized = torch.abs(f_high) * random_phase
+
+    # --- Background reconstruction ---
+    # Avoid division by zero in magnitude spectrum
+    mag_real_safe = mag_real + 1e-8
+    background = inverse_2d_fft_torch(f_high_randomized / mag_real_safe)
+    background = background.to(device)
+
+    # Normalize background
+    bg_max = background.abs().max()
+    if bg_max > 1e-8:
+        background_norm = background / bg_max
+    else:
+        background_norm = background
+
+    # --- Threshold mask on simulation ---
+    std, mean, ind = noise_est(sim)
+    mask = sim > (mean + 3 * std)
+    # --- Combine ---
+    sim_max = sim.abs().max()
+    augmented_data = sim + mask.float() * sim_max * background_norm * scale
+    return augmented_data
+
+
+def add_random_hot_pixel(image, sigma=1.0, prob=0.5, min_scale=5.0, max_scale=20):
+    """Randomly adds a hot pixel (with small Gaussian spread) to a 2D image tensor.
+
+    Parameters
+    ----------
+    image : torch.Tensor
+        2D tensor (H, W) representing the image.
+    sigma : float
+        Standard deviation (in pixels) of the Gaussian spread.
+    prob : float
+        Probability of applying the augmentation.
+    min_scale : float
+        Minimum multiple of the image max value for the hot pixel intensity.
+    max_scale : float
+        Maximum multiple of the image max value for the hot pixel intensity.
+
+    Returns
+    -------
+    torch.Tensor
+        Image with (possibly) one hot pixel added.
+    """
+    if torch.rand(1).item() > prob:
+        return image  # skip augmentation randomly
+
+    # Ensure image is 2D
+    original_shape = image.shape
+    while image.dim() > 2:
+        image = image.squeeze(0)
+
+    H, W = image.shape
+
+    # --- Pick random location ---
+    y = torch.randint(0, H, (1,), device=image.device).item()
+    x = torch.randint(0, W, (1,), device=image.device).item()
+
+    # --- Determine random intensity ---
+    image_max = image.max().item() if image.numel() > 0 else 1.0
+    intensity_scale = torch.empty(1, device=image.device).uniform_(min_scale, max_scale).item()
+    intensity = image_max * intensity_scale
+
+    # --- Build Gaussian hot pixel ---
+    yy, xx = torch.meshgrid(
+        torch.arange(H, device=image.device), torch.arange(W, device=image.device), indexing="ij"
+    )
+    gauss = torch.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * sigma**2))
+    gauss = gauss / gauss.max() * intensity
+
+    # --- Add to image ---
+    augmented = image + gauss
+
+    # Restore original shape if needed
+    if len(original_shape) > 2:
+        while len(augmented.shape) < len(original_shape):
+            augmented = augmented.unsqueeze(0)
+
+    return augmented
+
+
 def batched_crop(image_tensor: torch.Tensor, centers: torch.Tensor, crop_size: int) -> torch.Tensor:
     """Crop square patches from an image tensor given a list of center points.
 
@@ -987,3 +1234,609 @@ def getRealData(butler, cdb_table, ind):
     row = cdb_table[(cdb_table["visit_id"] == exposure_id) & (cdb_table["detector"] == detector_name)]
     zk = getzk(row)
     return (data_1, detector_name, zk), (data_2, detector_name + 1, zk)
+
+
+def zernikes_to_dof(
+    filter_name: str,
+    measured_zk: np.ndarray,
+    sensor_names: list[str],
+    rotation_angle: float,
+    ofc_data,
+    trunc_index: int | None = 12,
+    verbose: bool = True,
+):
+    """Estimate DOF state from measured Zernikes.
+
+    Solves y = A * (W * x_dof), where W is normalization_weights.
+
+    Parameters
+    ----------
+    filter_name : str
+        Optical filter name.
+    measured_zk : ndarray
+        Measured Zernike coefficients [#sensors, #Zernikes].
+    sensor_names : list[str]
+        List of sensors to use.
+    rotation_angle : float
+        Rotation angle in degrees.
+    ofc_data : OfcData
+        OFC configuration.
+    trunc_index : int | None
+        If set, number of singular values to keep in SVD (truncated SVD).
+        If None, all nonzero singular values are used.
+    verbose : bool
+        Print debug diagnostics.
+    """
+    # --- Adjust Zernike range ---
+    n_zk_meas = measured_zk.shape[1]
+    zn_idx = np.arange(n_zk_meas)
+
+    # --- Field rotation ---
+    field_angles = np.array([ofc_data.sample_points[s] for s in sensor_names])
+    rot_rad = np.deg2rad(-rotation_angle)
+    rot_mat = np.array([[np.cos(rot_rad), -np.sin(rot_rad)], [np.sin(rot_rad), np.cos(rot_rad)]])
+    field_angles = field_angles @ rot_mat
+
+    # --- Sensitivity matrix (Zernike × DOF) ---
+    dz_matrix = SensitivityMatrix(ofc_data)
+    sens = dz_matrix.evaluate(field_angles, 0.0)
+    sens = sens[:, zn_idx, :].reshape((-1, sens.shape[-1]))
+    valid_idx = [i for i in ofc_data.dof_idx if i < sens.shape[-1]]
+    sens = sens[:, valid_idx]
+
+    # --- Apply normalization once (LSST convention) ---
+    norm_mat = np.diag(ofc_data.normalization_weights[valid_idx])
+    sens = sens @ norm_mat
+
+    # --- Build target vector (measured - intrinsic - static) ---
+    intrinsic = get_intrinsic_zernikes(ofc_data, filter_name, sensor_names, rotation_angle)[:, zn_idx]
+    y2_corr = np.array([ofc_data.y2_correction[s] for s in sensor_names])[:, zn_idx]
+    y = (measured_zk - intrinsic - y2_corr).reshape(-1, 1)
+
+    # --- SVD pseudo-inverse with truncation index ---
+    U, S, Vh = svd(sens, full_matrices=False)
+    if trunc_index is None:
+        trunc_index = len(S)  # keep all
+    trunc_index = min(trunc_index, len(S))  # safety
+
+    if verbose:
+        print(f"Using {trunc_index}/{len(S)} singular values")
+
+    # Zero-out smaller singular values
+    S_inv = np.zeros_like(S)
+    S_inv[:trunc_index] = 1.0 / S[:trunc_index]
+
+    # Reconstruct pseudo-inverse
+    A_pinv = Vh.T @ np.diag(S_inv) @ U.T
+
+    # --- Solve for DOFs ---
+    x_dof = A_pinv @ y
+
+    if verbose:
+        print(f"[Z→DOF] sens: {sens.shape}, y: {y.shape}, x_dof: {x_dof.shape}")
+        print(f"||y||={np.linalg.norm(y):.3f}, ||A@x||={np.linalg.norm(sens @ x_dof):.3f}")
+        print(f"x_dof range: {x_dof.min():.3f} → {x_dof.max():.3f}")
+
+    return x_dof.ravel()
+
+
+def dof_to_zernikes(
+    filter_name: str,
+    x_dof: np.ndarray,
+    sensor_names: list[str],
+    rotation_angle: float,
+    ofc_data,
+    n_zk_target: int | None = None,
+    measured_zk: np.ndarray | None = None,
+    verbose: bool = True,
+):
+    """Predict Zernikes from DOF state (forward model).
+
+    Returns total wavefront = intrinsic + static + misalignment term.
+    """
+    # --- Field rotation ---
+    field_angles = np.array([ofc_data.sample_points[s] for s in sensor_names])
+    rot_rad = np.deg2rad(-rotation_angle)
+    rot_mat = np.array([[np.cos(rot_rad), -np.sin(rot_rad)], [np.sin(rot_rad), np.cos(rot_rad)]])
+    field_angles = field_angles @ rot_mat
+
+    # --- Sensitivity matrix ---
+    dz_matrix = SensitivityMatrix(ofc_data)
+    sens = dz_matrix.evaluate(field_angles, 0.0)
+    n_zk_total = sens.shape[1]
+    if n_zk_target is None or n_zk_target > n_zk_total:
+        n_zk_target = n_zk_total
+    zn_idx = np.arange(n_zk_target)
+    sens = sens[:, zn_idx, :].reshape((-1, sens.shape[-1]))
+    sens = sens[:, ofc_data.dof_idx]
+
+    # --- Normalize ---
+    norm_mat = np.diag(ofc_data.normalization_weights[ofc_data.dof_idx])
+    x_dof = x_dof.reshape(-1, 1)
+    zk_pred = (sens @ norm_mat @ x_dof).reshape(len(sensor_names), n_zk_target)
+
+    # --- Add intrinsic + static ---
+    intrinsic = get_intrinsic_zernikes(ofc_data, filter_name, sensor_names, rotation_angle)
+    y2_corr = np.array([ofc_data.y2_correction[s] for s in sensor_names])
+    zk_total = intrinsic[:, zn_idx] + y2_corr[:, zn_idx] + zk_pred
+
+    # --- Diagnostics ---
+    if verbose:
+        print(f"[DOF→Z] sens: {sens.shape}, x_dof: {x_dof.shape}, zk_total: {zk_total.shape}")
+        if measured_zk is not None:
+            n_meas = min(measured_zk.shape[1], n_zk_target)
+            diff = measured_zk[:, :n_meas] - zk_total[:, :n_meas]
+            rms_nm = np.sqrt(np.mean(diff**2)) * 1e3  # assuming µm input
+            print(f"RMS difference (meas vs recon): {rms_nm:.3f} nm")
+            if rms_nm > 100:
+                print("⚠️  Warning: Possible unit or normalization mismatch.")
+
+    return zk_total
+
+
+# ============================================================================
+# PyTorch DOF Conversion Functions
+# ============================================================================
+
+# Global cache for precomputed PyTorch matrices
+_PRECOMPUTED_PYTORCH_MATRICES: Optional[Dict[str, Any]] = None
+
+
+def precompute_pytorch_dof_matrices(
+    ofc_data,
+    sensor_names: Optional[list[str]] = None,
+    filter_names: Optional[list[str]] = None,
+    n_zk_max: int = 28,
+    device: str = "cpu",
+) -> Dict[str, torch.Tensor]:
+    """Precompute PyTorch matrices for DOF conversion at rotation_angle=0.
+
+    This function precomputes sensitivity matrices, intrinsic Zernikes, and
+    corrections for each sensor individually at rotation_angle=0. These matrices
+    can then be used by the PyTorch conversion functions.
+
+    Parameters
+    ----------
+    ofc_data : OFCData
+        OFC configuration data.
+    sensor_names : list[str], optional
+        List of sensor names to precompute. Defaults to ["R00_SW0", "R04_SW0", "R40_SW0", "R44_SW0"].
+    filter_names : list[str], optional
+        List of filter names to precompute intrinsic Zernikes for.
+        Defaults to ["U", "G", "R", "I", "Z", "Y"].
+    n_zk_max : int, default=28
+        Maximum number of Zernikes to precompute.
+    device : str, default="cpu"
+        Device to store tensors on.
+
+    Returns
+    -------
+    Dict[str, torch.Tensor]
+        Dictionary containing precomputed matrices:
+        - 'sensor_sensitivity_matrices': Dict[str, torch.Tensor] - Per-sensor sensitivity matrices
+        - 'intrinsic_zernikes': Dict[str, Dict[str, torch.Tensor]] - Per-filter, per-sensor intrinsic Zernikes
+        - 'y2_corrections': Dict[str, torch.Tensor] - Per-sensor y2 corrections
+        - 'normalization_weights': torch.Tensor - DOF normalization weights
+        - 'dof_idx': torch.Tensor - DOF indices
+        - 'n_zk_total': int - Total number of Zernikes
+        - 'n_dof': int - Number of DOFs
+    """
+    global _PRECOMPUTED_PYTORCH_MATRICES
+
+    if sensor_names is None:
+        sensor_names = ["R00_SW0", "R04_SW0", "R40_SW0", "R44_SW0"]
+    if filter_names is None:
+        filter_names = ["U", "G", "R", "I", "Z", "Y"]
+
+    logger.info(f"Precomputing PyTorch DOF matrices for {len(sensor_names)} sensors at rotation_angle=0")
+
+    # Initialize sensitivity matrix evaluator
+    dz_matrix = SensitivityMatrix(ofc_data)
+
+    # Get DOF indices and normalization weights
+    dof_idx_np = np.array(ofc_data.dof_idx)
+    dof_idx = torch.tensor(ofc_data.dof_idx, dtype=torch.long, device=device)
+    normalization_weights = torch.tensor(ofc_data.normalization_weights, dtype=torch.float64, device=device)
+
+    # Determine valid DOF indices by checking first sensor
+    # (all sensors should have same DOF structure)
+    first_sensor_field = np.array([ofc_data.sample_points[sensor_names[0]]])
+    first_sens = dz_matrix.evaluate(first_sensor_field, 0.0)
+    n_dof_total = first_sens.shape[-1]
+    valid_dof_mask_np = dof_idx_np < n_dof_total
+    valid_dof_idx_np = dof_idx_np[valid_dof_mask_np]
+    valid_dof_mask = torch.tensor(valid_dof_mask_np, dtype=torch.bool, device=device)
+    valid_dof_idx = dof_idx[valid_dof_mask]
+
+    # Precompute per-sensor sensitivity matrices at rotation_angle=0
+    sensor_sensitivity_matrices: Dict[str, torch.Tensor] = {}
+    sensor_intrinsic_zernikes: Dict[str, Dict[str, torch.Tensor]] = {filt: {} for filt in filter_names}
+    sensor_y2_corrections: Dict[str, torch.Tensor] = {}
+
+    for sensor_name in sensor_names:
+        # Get field angle for this sensor (no rotation)
+        field_angle = np.array([ofc_data.sample_points[sensor_name]])
+
+        # Evaluate sensitivity matrix for this sensor
+        sens = dz_matrix.evaluate(field_angle, 0.0)  # Shape: (1, n_zk, n_dof)
+        sens = sens[0, :n_zk_max, :]  # Shape: (n_zk_max, n_dof)
+
+        # Select valid DOF indices (use precomputed mask)
+        sens = sens[:, valid_dof_idx_np]  # Shape: (n_zk_max, n_valid_dof)
+
+        # Apply normalization
+        norm_weights = normalization_weights[valid_dof_mask]
+        norm_mat = torch.diag(norm_weights)
+        sens_normalized = torch.tensor(sens, dtype=torch.float64, device=device) @ norm_mat
+
+        # Store per-sensor matrix: (n_zk_max, n_valid_dof)
+        sensor_sensitivity_matrices[sensor_name] = sens_normalized
+
+        # Precompute intrinsic Zernikes for each filter (at rotation_angle=0)
+        for filter_name in filter_names:
+            intrinsic = get_intrinsic_zernikes(ofc_data, filter_name, [sensor_name], 0.0)
+            sensor_intrinsic_zernikes[filter_name][sensor_name] = torch.tensor(
+                intrinsic[0, :n_zk_max], dtype=torch.float64, device=device
+            )
+
+        # Store y2 correction for this sensor
+        y2_corr = ofc_data.y2_correction[sensor_name]
+        sensor_y2_corrections[sensor_name] = torch.tensor(
+            y2_corr[:n_zk_max], dtype=torch.float64, device=device
+        )
+
+    n_zk_total = n_zk_max
+    n_dof = len(valid_dof_idx)
+
+    result = {
+        "sensor_sensitivity_matrices": sensor_sensitivity_matrices,
+        "intrinsic_zernikes": sensor_intrinsic_zernikes,
+        "y2_corrections": sensor_y2_corrections,
+        "normalization_weights": normalization_weights,
+        "dof_idx": dof_idx,
+        "valid_dof_mask": valid_dof_mask,
+        "valid_dof_idx": valid_dof_idx,
+        "n_zk_total": n_zk_total,
+        "n_dof": n_dof,
+        "sensor_names": sensor_names,
+        "filter_names": filter_names,
+    }
+
+    _PRECOMPUTED_PYTORCH_MATRICES = result
+    logger.info(f"Precomputation complete: {n_zk_total} Zernikes, {n_dof} DOFs")
+
+    return result
+
+
+def _get_precomputed_matrices() -> Dict[str, Any]:
+    """Get precomputed matrices, raising error if not initialized."""
+    if _PRECOMPUTED_PYTORCH_MATRICES is None:
+        raise RuntimeError(
+            "Precomputed matrices not initialized. Call precompute_pytorch_dof_matrices() first."
+        )
+    return _PRECOMPUTED_PYTORCH_MATRICES
+
+
+def _build_rotated_sensitivity_matrix(
+    sensor_names: list[str],
+    rotation_angle: float,
+    ofc_data,
+    n_zk: int,
+    device: str = "cpu",
+) -> torch.Tensor:
+    """Build sensitivity matrix for given sensors and rotation angle.
+
+    This function rotates field angles and evaluates the sensitivity matrix.
+    Used when rotation is needed at runtime.
+    """
+    # Rotate field angles
+    field_angles = np.array([ofc_data.sample_points[s] for s in sensor_names])
+    rot_rad = np.deg2rad(-rotation_angle)
+    rot_mat = np.array([[np.cos(rot_rad), -np.sin(rot_rad)], [np.sin(rot_rad), np.cos(rot_rad)]])
+    field_angles_rotated = field_angles @ rot_mat
+
+    # Evaluate sensitivity matrix
+    dz_matrix = SensitivityMatrix(ofc_data)
+    sens = dz_matrix.evaluate(field_angles_rotated, 0.0)  # Shape: (n_sensors, n_zk, n_dof)
+    sens = sens[:, :n_zk, :]  # Shape: (n_sensors, n_zk, n_dof)
+
+    # Reshape to (n_sensors * n_zk, n_dof)
+    n_sensors, n_zk, n_dof_total = sens.shape
+    sens = sens.reshape(-1, n_dof_total)
+
+    # Select valid DOF indices
+    valid_idx = [i for i in ofc_data.dof_idx if i < sens.shape[-1]]
+    sens = sens[:, valid_idx]
+
+    # Apply normalization
+    norm_mat = np.diag(ofc_data.normalization_weights[valid_idx])
+    sens_normalized = sens @ norm_mat
+
+    return torch.tensor(sens_normalized, dtype=torch.float64, device=device)
+
+
+def zernikes_to_dof_torch(
+    filter_name: str,
+    measured_zk: torch.Tensor,
+    sensor_names: list[str],
+    rotation_angle: float = 0.0,
+    ofc_data=None,
+    trunc_index: int | None = 50,
+    device: str = "cpu",
+    verbose: bool = True,
+) -> torch.Tensor:
+    """Estimate DOF state from measured Zernikes using Pytorch.
+
+    This function uses precomputed matrices when rotation_angle=0, otherwise
+    it requires ofc_data to compute rotated matrices.
+
+    Parameters
+    ----------
+    filter_name : str
+        Optical filter name (e.g., "R", "Z", "I").
+    measured_zk : torch.Tensor
+        Measured Zernike coefficients [#sensors, #Zernikes].
+    sensor_names : list[str]
+        List of sensors to use. Must be a subset of precomputed sensors.
+    rotation_angle : float, default=0.0
+        Rotation angle in degrees. If 0.0, uses precomputed matrices.
+    ofc_data : OFCData, optional
+        OFC configuration. Required if rotation_angle != 0.0.
+    trunc_index : int | None, default=12
+        If set, number of singular values to keep in SVD (truncated SVD).
+        If None, all nonzero singular values are used.
+    device : str, default="cpu"
+        Device for computation.
+    verbose : bool, default=True
+        Print debug diagnostics.
+
+    Returns
+    -------
+    torch.Tensor
+        DOF state vector [n_dof].
+    """
+    # Ensure measured_zk is on correct device and dtype
+    measured_zk = measured_zk.to(device=device, dtype=torch.float64)
+    n_sensors, n_zk_meas = measured_zk.shape
+
+    # Handle rotation: if rotation_angle != 0, we need ofc_data to recompute
+    if abs(rotation_angle) > 1e-6:
+        if ofc_data is None:
+            raise ValueError(
+                "ofc_data is required when rotation_angle != 0. "
+                "Either set rotation_angle=0 or provide ofc_data."
+            )
+        # Build rotated sensitivity matrix
+        sens = _build_rotated_sensitivity_matrix(sensor_names, rotation_angle, ofc_data, n_zk_meas, device)
+        # Get intrinsic and y2 corrections with rotation
+        intrinsic_list = []
+        y2_corr_list = []
+        for sensor_name in sensor_names:
+            intrinsic = get_intrinsic_zernikes(ofc_data, filter_name, [sensor_name], rotation_angle)
+            intrinsic_list.append(torch.tensor(intrinsic[0, :n_zk_meas], dtype=torch.float64, device=device))
+            y2_corr = ofc_data.y2_correction[sensor_name]
+            y2_corr_list.append(torch.tensor(y2_corr[:n_zk_meas], dtype=torch.float64, device=device))
+        intrinsic = torch.stack(intrinsic_list)
+        y2_corr = torch.stack(y2_corr_list)
+    else:
+        # Use precomputed matrices
+        matrices = _get_precomputed_matrices()
+
+        # Verify sensor_names are in precomputed set
+        precomputed_sensors = matrices["sensor_names"]
+        if not all(s in precomputed_sensors for s in sensor_names):
+            raise ValueError(
+                f"All sensor_names must be in precomputed set {precomputed_sensors}. " f"Got: {sensor_names}"
+            )
+
+        # Build combined sensitivity matrix from precomputed per-sensor matrices
+        sens_list = []
+        intrinsic_list = []
+        y2_corr_list = []
+
+        for sensor_name in sensor_names:
+            # Get precomputed sensitivity matrix for this sensor
+            sens_sensor = matrices["sensor_sensitivity_matrices"][sensor_name]
+            # Select only the Zernikes we need
+            sens_sensor = sens_sensor[:n_zk_meas, :]
+            sens_list.append(sens_sensor)
+
+            # Get intrinsic Zernikes for this filter and sensor
+            intrinsic_sensor = matrices["intrinsic_zernikes"][filter_name.upper()][sensor_name]
+            intrinsic_list.append(intrinsic_sensor[:n_zk_meas])
+
+            # Get y2 correction for this sensor
+            y2_sensor = matrices["y2_corrections"][sensor_name]
+            y2_corr_list.append(y2_sensor[:n_zk_meas])
+
+        # Stack: (n_sensors * n_zk_meas, n_dof)
+        sens = torch.cat(sens_list, dim=0)
+        intrinsic = torch.stack(intrinsic_list)
+        y2_corr = torch.stack(y2_corr_list)
+
+    # Build target vector: measured - intrinsic - static
+    y = (measured_zk - intrinsic - y2_corr).reshape(-1, 1)
+
+    # SVD pseudo-inverse with truncation index
+    U, S, Vh = torch.linalg.svd(sens, full_matrices=False)
+    if trunc_index is None:
+        trunc_index = len(S)  # keep all
+    trunc_index = min(trunc_index, len(S))  # safety
+
+    if verbose:
+        print(f"Using {trunc_index}/{len(S)} singular values")
+
+    # Zero-out smaller singular values
+    S_inv = torch.zeros_like(S)
+    S_inv[:trunc_index] = 1.0 / S[:trunc_index]
+
+    # Reconstruct pseudo-inverse
+    A_pinv = Vh.T @ torch.diag(S_inv) @ U.T
+
+    # Solve for DOFs
+    x_dof = A_pinv @ y
+
+    if verbose:
+        print(f"[Z→DOF] sens: {sens.shape}, y: {y.shape}, x_dof: {x_dof.shape}")
+        y_norm = torch.linalg.norm(y).item()
+        Ax_norm = torch.linalg.norm(sens @ x_dof).item()
+        print(f"||y||={y_norm:.3f}, ||A@x||={Ax_norm:.3f}")
+        print(f"x_dof range: {x_dof.min().item():.3f} → {x_dof.max().item():.3f}")
+
+    return x_dof.ravel()
+
+
+def dof_to_zernikes_torch(
+    filter_name: str,
+    x_dof: torch.Tensor,
+    sensor_names: list[str],
+    rotation_angle: float = 0.0,
+    ofc_data=None,
+    n_zk_target: int | None = None,
+    measured_zk: torch.Tensor | None = None,
+    device: str = "cpu",
+    verbose: bool = True,
+) -> torch.Tensor:
+    """Predict Zernikes from DOF state using Pytorch (forward model).
+
+    This function uses precomputed matrices when rotation_angle=0, otherwise
+    it requires ofc_data to compute rotated matrices.
+
+    Parameters
+    ----------
+    filter_name : str
+        Optical filter name (e.g., "R", "Z", "I").
+    x_dof : torch.Tensor
+        DOF state vector [n_dof] or [n_dof, 1].
+    sensor_names : list[str]
+        List of sensors to use. Must be a subset of precomputed sensors.
+    rotation_angle : float, default=0.0
+        Rotation angle in degrees. If 0.0, uses precomputed matrices.
+    ofc_data : OFCData, optional
+        OFC configuration. Required if rotation_angle != 0.0.
+    n_zk_target : int, optional
+        Number of Zernikes to predict. Defaults to n_zk_meas or precomputed max.
+    measured_zk : torch.Tensor, optional
+        Measured Zernikes for comparison/validation.
+    device : str, default="cpu"
+        Device for computation.
+    verbose : bool, default=True
+        Print debug diagnostics.
+
+    Returns
+    -------
+    torch.Tensor
+        Predicted Zernike coefficients [#sensors, #Zernikes].
+    """
+    # Ensure x_dof is on correct device and dtype
+    x_dof = x_dof.to(device=device, dtype=torch.float64)
+    if x_dof.dim() == 1:
+        x_dof = x_dof.unsqueeze(1)
+
+    # Determine number of Zernikes
+    # If not specified, infer from measured_zk if provided, otherwise use precomputed max
+    if n_zk_target is None:
+        if measured_zk is not None:
+            n_zk_target = measured_zk.shape[1]
+        else:
+            # Default to precomputed max, but this might need adjustment based on actual usage
+            matrices = _get_precomputed_matrices()
+            n_zk_target = matrices["n_zk_total"]
+    # Note: n_zk_target may be adjusted later based on actual sensitivity matrix shape
+
+    # Handle rotation: if rotation_angle != 0, we need ofc_data to recompute
+    if abs(rotation_angle) > 1e-6:
+        if ofc_data is None:
+            raise ValueError(
+                "ofc_data is required when rotation_angle != 0. "
+                "Either set rotation_angle=0 or provide ofc_data."
+            )
+        # Build rotated sensitivity matrix
+        sens = _build_rotated_sensitivity_matrix(sensor_names, rotation_angle, ofc_data, n_zk_target, device)
+        # Get intrinsic and y2 corrections with rotation
+        intrinsic_list = []
+        y2_corr_list = []
+        for sensor_name in sensor_names:
+            intrinsic = get_intrinsic_zernikes(ofc_data, filter_name, [sensor_name], rotation_angle)
+            intrinsic_list.append(
+                torch.tensor(intrinsic[0, :n_zk_target], dtype=torch.float64, device=device)
+            )
+            y2_corr = ofc_data.y2_correction[sensor_name]
+            y2_corr_list.append(torch.tensor(y2_corr[:n_zk_target], dtype=torch.float64, device=device))
+        intrinsic = torch.stack(intrinsic_list)
+        y2_corr = torch.stack(y2_corr_list)
+    else:
+        # Use precomputed matrices
+        matrices = _get_precomputed_matrices()
+
+        # Verify sensor_names are in precomputed set
+        precomputed_sensors = matrices["sensor_names"]
+        if not all(s in precomputed_sensors for s in sensor_names):
+            raise ValueError(
+                f"All sensor_names must be in precomputed set {precomputed_sensors}. " f"Got: {sensor_names}"
+            )
+
+        # Build combined sensitivity matrix from precomputed per-sensor matrices
+        sens_list = []
+        intrinsic_list = []
+        y2_corr_list = []
+
+        for sensor_name in sensor_names:
+            # Get precomputed sensitivity matrix for this sensor
+            sens_sensor = matrices["sensor_sensitivity_matrices"][sensor_name]
+            # Select only the Zernikes we need
+            sens_sensor = sens_sensor[:n_zk_target, :]
+            sens_list.append(sens_sensor)
+
+            # Get intrinsic Zernikes for this filter and sensor
+            intrinsic_sensor = matrices["intrinsic_zernikes"][filter_name.upper()][sensor_name]
+            intrinsic_list.append(intrinsic_sensor[:n_zk_target])
+
+            # Get y2 correction for this sensor
+            y2_sensor = matrices["y2_corrections"][sensor_name]
+            y2_corr_list.append(y2_sensor[:n_zk_target])
+
+        # Stack: (n_sensors * n_zk_target, n_dof)
+        sens = torch.cat(sens_list, dim=0)
+        intrinsic = torch.stack(intrinsic_list)
+        y2_corr = torch.stack(y2_corr_list)
+
+    # Predict Zernikes from DOF: sens @ x_dof
+    # Infer n_zk from sensitivity matrix shape (more reliable than n_zk_target parameter)
+    # This handles cases where n_zk_target doesn't match the actual matrix dimensions
+    n_sensors_actual = len(sensor_names)
+    n_zk_from_sens = sens.shape[0] // n_sensors_actual
+
+    # Verify the shape makes sense
+    if sens.shape[0] % n_sensors_actual != 0:
+        raise ValueError(
+            f"Sensitivity matrix shape {sens.shape} is not compatible with "
+            f"{n_sensors_actual} sensors. Expected n_rows to be divisible by n_sensors."
+        )
+    zk_pred_flat = sens @ x_dof  # Shape: (n_sensors * n_zk_from_sens, 1)
+    zk_pred = zk_pred_flat.reshape(n_sensors_actual, n_zk_from_sens)
+
+    # Trim intrinsic and y2_corr to match if needed
+    if intrinsic.shape[1] > n_zk_from_sens:
+        intrinsic = intrinsic[:, :n_zk_from_sens]
+    if y2_corr.shape[1] > n_zk_from_sens:
+        y2_corr = y2_corr[:, :n_zk_from_sens]
+
+    # Add intrinsic + static corrections
+    zk_total = intrinsic + y2_corr + zk_pred
+
+    # Diagnostics
+    if verbose:
+        print(f"[DOF→Z] sens: {sens.shape}, x_dof: {x_dof.shape}, zk_total: {zk_total.shape}")
+        print(f"Using {n_sensors_actual} sensors, {n_zk_from_sens} Zernikes per sensor")
+        if measured_zk is not None:
+            measured_zk = measured_zk.to(device=device, dtype=torch.float64)
+            n_meas = min(measured_zk.shape[1], n_zk_from_sens)
+            n_meas_sensors = min(measured_zk.shape[0], n_sensors_actual)
+            diff = measured_zk[:n_meas_sensors, :n_meas] - zk_total[:n_meas_sensors, :n_meas]
+            rms_nm = torch.sqrt(torch.mean(diff**2)).item() * 1e3  # assuming µm input
+            print(f"RMS difference (meas vs recon): {rms_nm:.3f} nm")
+            if rms_nm > 100:
+                print("⚠️  Warning: Possible unit or normalization mismatch.")
+
+    return zk_total

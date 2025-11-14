@@ -15,7 +15,7 @@ from torch.utils.data import Dataset
 
 # Local/application imports
 from .constants import DEFAULT_NOLL_ZK, DEFAULT_TRAIN_FRACTION
-from .utils import shift_offcenter, transform_inputs
+from .utils import shift_offcenter, transform_inputs, augment_data_torch, add_random_hot_pixel
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +290,9 @@ class Donuts_Fullframe(Dataset):
         coral_filepath: str = "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/coral/",
         coral_mode: bool = False,
         mask_mode: bool = False,
+        augment: bool = False,
+        augment_scale: float = 0.1,
+        augment_kmin: float = 0.1,
         **kwargs: Any,
     ) -> None:
         """Load the simulated ImSim donuts and zernikes in a Pytorch Dataset.
@@ -314,6 +317,16 @@ class Donuts_Fullframe(Dataset):
             Whether to enable coral mode for domain adaptation.
         mask_mode: bool, default=False
             Whether to use mask mode for zernike extraction.
+        augment: bool, default=False
+            Whether to apply frequency-based augmentation. Requires coral_mode=True.
+            When enabled, randomly augments 50% of samples by injecting high-frequency
+            structure from coral images into simulation images.
+        augment_scale: float, default=0.1
+            (Deprecated) Scaling factor parameter. The scale is now randomly sampled
+            uniformly between 0.1 and 1.0 for each augmentation. This parameter is
+            kept for backward compatibility but is not used.
+        augment_kmin: float, default=0.1
+            Minimum frequency magnitude to extract from coral images for augmentation.
         """
         self.settings = {
             "mode": mode,
@@ -334,6 +347,15 @@ class Donuts_Fullframe(Dataset):
         logger.debug(f"Image directory: {self.image_dir}")
         self.coral_filepath = coral_filepath
         self.coral_mode = coral_mode
+        self.augment = augment
+        self.augment_scale = augment_scale
+        self.augment_kmin = augment_kmin
+
+        # Augmentation requires coral_mode to be enabled
+        if self.augment and not self.coral_mode:
+            logger.warning("augment=True requires coral_mode=True. Disabling augmentation.")
+            self.augment = False
+
         if coral_mode:
             self.coral_image_files = []
             # Use a temporary variable to avoid modifying the original path
@@ -575,6 +597,51 @@ class Donuts_Fullframe(Dataset):
         if self.coral_mode:
             coral_output = self.sample_coral()
             output.update(coral_output)
+
+            # Apply augmentations if enabled (only in training mode)
+            if self.augment and self.settings["mode"] == "train":
+                # Apply frequency-based augmentation 50% of the time
+                if torch.rand(1).item() > 0.5:
+                    try:
+                        # Randomly sample scale between 0.1 and 1.0 uniformly
+                        random_scale = torch.empty(1).uniform_(0.5, 1.0).item()
+                        # Apply augmentation (function handles device, shape, and dtype internally)
+                        augmented_img = augment_data_torch(
+                            img, coral_output["coral_image"], scale=random_scale, kmin=self.augment_kmin
+                        )
+
+                        # Ensure augmented image matches original image's dtype and device
+                        augmented_img = augmented_img.to(dtype=img.dtype, device=img.device)
+
+                        # Restore original shape if img had extra dimensions
+                        original_shape = img.shape
+                        if augmented_img.shape != original_shape:
+                            # Add back channel/batch dimensions if needed
+                            while len(augmented_img.shape) < len(original_shape):
+                                augmented_img = augmented_img.unsqueeze(0)
+
+                        output["image"] = augmented_img
+                    except Exception as e:
+                        # If augmentation fails, use original image and log warning
+                        logger.warning(f"Frequency augmentation failed, using original image: {e}")
+                        # output["image"] remains as img
+
+                # Apply hot pixel augmentation 10% of the time (independent of frequency augmentation)
+                # This can be applied to the original image or the frequency-augmented image
+                try:
+                    current_img = output.get("image", img)
+                    hot_pixel_img = add_random_hot_pixel(
+                        current_img, sigma=0.05, prob=0.1, min_scale=5.0, max_scale=20
+                    )
+                    # Ensure dtype and device match (function preserves device, but ensure dtype consistency)
+                    if hot_pixel_img.dtype != img.dtype:
+                        hot_pixel_img = hot_pixel_img.to(dtype=img.dtype)
+                    output["image"] = hot_pixel_img
+                except Exception as e:
+                    # If hot pixel augmentation fails, keep current image and log warning
+                    logger.warning(f"Hot pixel augmentation failed: {e}")
+                    # output["image"] remains as current_img
+
         return output
 
 
@@ -683,7 +750,7 @@ class zernikeDataset(Dataset):
         """Return the number of samples in the dataset."""
         return self.num_samples
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, str, str]:
         """Retrieve and process a single sample from the dataset at the specified index.
 
         This method loads a data sample from the file at the given index,
@@ -710,6 +777,8 @@ class zernikeDataset(Dataset):
               Zernike coefficient.
             - y (torch.Tensor) : A tensor of true Zernike
               coefficients (ground truth), shaped as `(N,)`.
+            - filter_name (str) : Filter name extracted from header.
+            - raftbay (str) : Raft bay sensor name from header.
 
         Notes
         -----
@@ -760,7 +829,13 @@ class zernikeDataset(Dataset):
             x_total = torch.cat([x_total, padding], dim=0).to(self.device).float()
         y = loaded_data["zk_true"]
         # return the stack of embedings, mean zernike estimate and the true zernike in PSF
-        return x_total, mean[None, ...], y
+        return (
+            x_total,
+            mean[None, ...],
+            y,
+            loaded_data["header"]["FILTER"].split("_")[0],
+            loaded_data["header"]["RAFTBAY"] + "_SW0",
+        )
 
 
 # Collate function for padding sequences
@@ -799,13 +874,17 @@ def zk_collate_fn(batch):
     - The resulting tensors (`x_total`, `x_mean_total`, and `y_total`)
         are returned in a format suitable for training a model.
     """
-    x_batch, x_mean_batch, y_batch = zip(*batch)
+    x_batch, x_mean_batch, y_batch, filter_batch, chipid_batch = zip(*batch)
     x_total = torch.zeros((len(x_batch), x_batch[0].shape[0], x_batch[0].shape[1]))
     y_total = torch.zeros((len(y_batch), y_batch[0].shape[1]))
     x_mean_total = torch.zeros((len(x_mean_batch), x_mean_batch[0].shape[-1]))
     # match the parallel arrays together to get the values
-    for i, (x, x_mean, y) in enumerate(zip(x_batch, x_mean_batch, y_batch)):
+    filter_total = []
+    chipid_total = []
+    for i, (x, x_mean, y, f, s) in enumerate(zip(x_batch, x_mean_batch, y_batch, filter_batch, chipid_batch)):
         x_total[i, :, :] = x
         y_total[i, :] = y[0, :]
         x_mean_total[i, :] = x_mean[0, 0, :]  # <-- fix here
-    return (x_total, x_mean_total), y_total
+        filter_total.append(f)
+        chipid_total.append(s)
+    return (x_total, x_mean_total, filter_total, chipid_total), y_total

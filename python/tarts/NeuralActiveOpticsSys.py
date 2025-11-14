@@ -51,6 +51,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         pretrained=True,
         compile_models=False,
         ood_model_path=None,
+        kmin=None,
+        kmax=float("inf"),
+        sigma_frac=0.1,
     ) -> None:
         """Initialize the Neural Active Optics System.
 
@@ -82,10 +85,25 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         ood_model_path : str, optional
             Path to OOD detection model (joblib file). If provided, OOD detection will be performed
             during inference and scores will be stored in internal metadata. Defaults to None.
+        kmin : float, optional
+            Minimum frequency magnitude for frequency filtering. If None, frequency filtering is disabled.
+            If set, applies frequency filter to each cropped image before passing to WaveNet.
+            Defaults to None.
+        kmax : float, optional
+            Maximum frequency magnitude for frequency filtering. Only used if kmin is not None.
+            Defaults to float('inf').
+        sigma_frac : float, optional
+            Fractional Gaussian width for smooth filter edges in frequency filtering.
+            Only used if kmin is not None. Defaults to 0.1.
         """
         super().__init__()
         self.save_hyperparameters()
         self.device_val = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Initialize frequency filtering parameters
+        self.kmin = kmin
+        self.kmax = kmax
+        self.sigma_frac = sigma_frac
 
         # Initialize attributes that may be set during forward pass
         # These can be lists or tensors depending on context
@@ -308,6 +326,95 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 internal_data.append(data_dict)
 
         return internal_data
+
+    def filter_image_by_frequency_torch(self, image, kmin=0, kmax=float("inf"), sigma_frac=0.1, device=None):
+        """Apply a smooth Gaussian-weighted frequency filter in Fourier space to a 2D image.
+
+        Uses PyTorch for GPU acceleration.
+
+        Parameters
+        ----------
+        image : torch.Tensor or np.ndarray
+            2D input image (real-valued). Shape: (H, W)
+        kmin, kmax : float
+            Minimum and maximum |k| (frequency magnitude) to keep.
+        sigma_frac : float, optional
+            Fractional Gaussian width for smooth filter edges.
+            Higher = softer transitions (default 0.1).
+        show : bool, optional
+            If True, visualize FFT magnitude, filter mask, and filtered image.
+        device : str or torch.device, optional
+            Device to run on ('cpu' or 'cuda'). Defaults to CUDA if available.
+
+        Returns
+        -------
+        filtered_image : torch.Tensor
+            The reconstructed real-space image after filtering.
+        weight : torch.Tensor
+            The Fourier-space weighting mask.
+        """
+        # --- Setup device ---
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # --- Convert image to float tensor ---
+        if not torch.is_tensor(image):
+            image = torch.tensor(image, dtype=torch.float32)
+        image = image.to(device)
+
+        # --- Compute 2D FFT ---
+        f = torch.fft.fft2(image)
+        fshift = torch.fft.fftshift(f)
+
+        # --- Build frequency grids ---
+        ny, nx = image.shape
+        kx = torch.fft.fftshift(torch.fft.fftfreq(nx, device=device))
+        ky = torch.fft.fftshift(torch.fft.fftfreq(ny, device=device))
+        KX, KY = torch.meshgrid(kx, ky, indexing="xy")
+        K_mag = torch.sqrt(KX**2 + KY**2)
+
+        # --- Smooth Gaussian-weighted filter ---
+        kmax_valid = K_mag.max()
+        kmax = min(kmax, kmax_valid.item())
+        sigma = sigma_frac * (kmax - kmin)
+        sigma = max(sigma, 1e-6)  # avoid division by zero
+
+        low_edge = 1 / (1 + torch.exp(-(K_mag - kmin) / sigma))
+        high_edge = 1 / (1 + torch.exp((K_mag - kmax) / sigma))
+        weight = low_edge * high_edge
+
+        # --- Apply filter ---
+        f_filtered = fshift * weight
+
+        # --- Inverse FFT ---
+        reconstructed = torch.fft.ifft2(torch.fft.ifftshift(f_filtered)).real
+        return reconstructed, weight
+
+    def filter_batch_images(self, images):
+        """Apply frequency filtering to a batch of 2D images.
+
+        Parameters
+        ----------
+        images : torch.Tensor
+            Batch of 2D images. Shape: (batch_size, height, width)
+
+        Returns
+        -------
+        filtered_images : torch.Tensor
+            Batch of filtered 2D images. Shape: (batch_size, height, width)
+        """
+        if self.kmin is None:
+            # Frequency filtering is disabled
+            return images
+
+        filtered_images = []
+        for i in range(images.shape[0]):
+            filtered_img, _ = self.filter_image_by_frequency_torch(
+                images[i], kmin=self.kmin, kmax=self.kmax, sigma_frac=self.sigma_frac, device=self.device_val
+            )
+            filtered_images.append(filtered_img)
+
+        return torch.stack(filtered_images, dim=0)
 
     def identity(self, x):
         """Return the input unchanged (identity function).
@@ -536,7 +643,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
             self.cropped_image = torch.zeros((1, self.CROP_SIZE, self.CROP_SIZE), device=self.device_val)
             self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
-            self.ood_scores = None
+            self.ood_scores = torch.tensor([float("nan")], device=self.device_val)
             return torch.zeros((1, num_zernikes), device=self.device_val)
 
         cropped_image = cropped_image[keep_ind]
@@ -546,8 +653,12 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         intra = intra[keep_ind]
         band = band[keep_ind]
         SNR = SNR[keep_ind]
+
+        # Apply frequency filtering if kmin is set
+        filtered_cropped_image = self.filter_batch_images(cropped_image[:, 0, :, :])
+
         total_zernikes = self.wavenet_model(
-            cropped_image[:, 0, :, :], fx.clone(), fy.clone(), intra.clone(), band.clone()
+            filtered_cropped_image, fx.clone(), fy.clone(), intra.clone(), band.clone()
         )
         total_zernikes = total_zernikes / 1000
 
@@ -711,8 +822,11 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         # Stack shifted images back into a batch
         shifted_cropped_image = torch.stack(shifted_images, dim=0)
 
+        # Apply frequency filtering if kmin is set
+        filtered_shifted_cropped_image = self.filter_batch_images(shifted_cropped_image)
+
         total_zernikes = self.wavenet_model(
-            shifted_cropped_image, fx.clone(), fy.clone(), intra.clone(), band.clone()
+            filtered_shifted_cropped_image, fx.clone(), fy.clone(), intra.clone(), band.clone()
         )
         total_zernikes = total_zernikes / 1000
 

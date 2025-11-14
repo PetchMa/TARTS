@@ -15,6 +15,7 @@ from typing import Any
 
 # Local/application imports
 from .utils import convert_zernikes_deploy
+from .utils import zernikes_to_dof_torch, dof_to_zernikes_torch
 
 
 class AggregatorNet(pl.LightningModule):
@@ -55,6 +56,7 @@ class AggregatorNet(pl.LightningModule):
         max_seq_length: int,
         lr=0.002507905395321983,
         num_zernikes=17,
+        zk_dof_zk=False,
     ):
         """Initialize the AggregatorNet model.
 
@@ -78,6 +80,8 @@ class AggregatorNet(pl.LightningModule):
         num_zernikes : int, optional
             The number of Zernike polynomial coefficients to
             predict (default is 19).
+        zk_dof_zk : bool, optional
+            Whether to use Zernike-DOF-Zernike conversion mode (default is False).
 
         Notes
         -----
@@ -96,6 +100,7 @@ class AggregatorNet(pl.LightningModule):
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         # final layer to transform to the shape of number of zernikes
         self.fc = nn.Linear(d_model, num_zernikes)
+        self.zk_dof_zk = zk_dof_zk
 
     def forward(self, x: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
         """Forward pass of the AggregatorNet model.
@@ -156,10 +161,41 @@ class AggregatorNet(pl.LightningModule):
         - The training loss is logged for monitoring.
 
         """
-        x, y = batch  # y is the target token
-        logits = self.forward(x)
-        loss = self.loss_fn(logits, y)
-        self.log("train_loss", loss, prog_bar=True)
+        if not self.zk_dof_zk:
+            x, y = batch  # y is the target token
+            x_input, x_mean, filter_name, chipid = x
+            logits = self.forward((x_input, x_mean))
+            loss = self.loss_fn(logits, y)
+            self.log("train_loss", loss, prog_bar=True)
+        else:
+            x, y = batch  # y is the target token
+            x_input, x_mean, filter_name, chipid = x
+            logits = self.forward((x_input, x_mean))
+            new_logits = torch.zeros_like(logits)
+            for i in range(len(filter_name)):
+                filter_name_i = filter_name[i]
+                sensor_names = chipid[i]
+                print("old logits", logits[0, :])
+                x_dof = zernikes_to_dof_torch(
+                    filter_name=filter_name_i,
+                    measured_zk=logits[i][None, :],
+                    sensor_names=[sensor_names],
+                    rotation_angle=0.0,
+                    device=self.device,
+                    verbose=False,
+                )
+                new_logits[i, :] = dof_to_zernikes_torch(
+                    filter_name=filter_name_i,
+                    x_dof=x_dof,
+                    sensor_names=[sensor_names],
+                    rotation_angle=0.0,
+                    device=self.device,
+                    verbose=False,
+                )
+            print("new_logits", new_logits[0, :])
+
+            loss = self.loss_fn(new_logits, y)
+            self.log("train_loss", loss, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -190,11 +226,40 @@ class AggregatorNet(pl.LightningModule):
         - The validation loss is logged for monitoring.
 
         """
-        x, y = batch  # y is the target token
-        logits = self.forward(x)
-        loss = self.loss_fn(logits, y)
-        self.log("val_loss", loss, prog_bar=True)
-        self.log("val_mRSSE", loss, prog_bar=True)  # mRSSE is the same as loss for this model
+        if not self.zk_dof_zk:
+            x, y = batch  # y is the target token
+            x_input, x_mean, filter_name, chipid = x
+            logits = self.forward((x_input, x_mean))
+            loss = self.loss_fn(logits, y)
+            self.log("val_loss", loss, prog_bar=True)
+            self.log("val_mRSSE", loss, prog_bar=True)  # mRSSE is the same as loss for this model
+        else:
+            x, y = batch  # y is the target token
+            x_input, x_mean, filter_name, chipid = x
+            logits = self.forward((x_input, x_mean))
+            new_logits = torch.zeros_like(logits)
+            for i in range(len(filter_name)):
+                filter_name_i = filter_name[i]
+                sensor_names = chipid[i]
+                x_dof = zernikes_to_dof_torch(
+                    filter_name=filter_name_i,
+                    measured_zk=logits[i][None, :],
+                    sensor_names=[sensor_names],
+                    rotation_angle=0.0,
+                    device=self.device,
+                    verbose=False,
+                )
+                new_logits[i, :] = dof_to_zernikes_torch(
+                    filter_name=filter_name_i,
+                    x_dof=x_dof,
+                    sensor_names=[sensor_names],
+                    rotation_angle=0.0,
+                    device=self.device,
+                    verbose=False,
+                )
+            loss = self.loss_fn(new_logits, y)
+            self.log("val_loss", loss, prog_bar=True)
+            self.log("val_mRSSE", loss, prog_bar=True)  # mRSSE is the same as loss for this model
         return loss
 
     def loss_fn(self, x, y):

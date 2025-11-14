@@ -267,7 +267,11 @@ class WaveNetSystem_Coral(pl.LightningModule):
         return f
 
     def calc_losses(
-        self, batch: Dict[str, Any], batch_idx: int, use_coral: bool = False
+        self,
+        batch: Dict[str, Any],
+        batch_idx: int,
+        use_coral: bool = False,
+        add_dare_gram_to_loss: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Predict Zernikes and calculate losses with optional DARE-GRAM.
 
@@ -279,6 +283,9 @@ class WaveNetSystem_Coral(pl.LightningModule):
             Batch index.
         use_coral: bool, default=False
             Whether to compute DARE-GRAM loss with coral/target data.
+        add_dare_gram_to_loss: bool, default=True
+            Whether to add DARE-GRAM loss to the total loss. If False, DARE-GRAM is computed
+            for logging but not included in the total loss.
 
         Returns
         -------
@@ -333,8 +340,12 @@ class WaveNetSystem_Coral(pl.LightningModule):
                 logger.warning(f"DARE-GRAM loss computation failed: {e}")
                 dare_gram_loss = torch.tensor(0.0, device=self.device_val)
 
-        scale_loss = self.exp_rise_flipped(self.val_mRSSE if self.val_mRSSE is not None else mRSSE)
-        total_loss = regression_loss + self.hparams.dare_gram_weight * scale_loss * dare_gram_loss
+        # Add DARE-GRAM to loss only if requested
+        if add_dare_gram_to_loss:
+            scale_loss = self.exp_rise_flipped(self.val_mRSSE if self.val_mRSSE is not None else mRSSE)
+            total_loss = regression_loss + self.hparams.dare_gram_weight * scale_loss * dare_gram_loss
+        else:
+            total_loss = regression_loss
 
         return total_loss, mRSSE, dare_gram_loss
 
@@ -349,10 +360,14 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Execute validation step on a batch."""
-        # Skip DARE-GRAM during validation for faster evaluation and focus on regression metrics
-        loss, mRSSE, dare_gram_loss = self.calc_losses(batch, batch_idx, use_coral=False)
+        # Compute DARE-GRAM for logging but don't add it to validation loss
+        # This allows monitoring domain adaptation without affecting validation metrics
+        loss, mRSSE, dare_gram_loss = self.calc_losses(
+            batch, batch_idx, use_coral=True, add_dare_gram_to_loss=False
+        )
         self.log("val_loss", loss, sync_dist=True, prog_bar=True)
         self.log("val_mRSSE", mRSSE, sync_dist=True)
+        self.log("val_dare_gram_loss", dare_gram_loss, sync_dist=True)
         self.val_mRSSE = mRSSE.clone().detach()  # Store a copy to avoid tensor reference issues
         return loss
 
