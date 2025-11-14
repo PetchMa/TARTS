@@ -21,7 +21,6 @@ import torch
 import torch.nn.functional as F
 import yaml
 from torch import nn
-from torch.ao.quantization.qconfig import default_qat_qconfig
 
 # Optional imports
 try:
@@ -100,93 +99,6 @@ def safe_yaml_load(file_path: str) -> Dict[str, Any]:
                 # Last resort: return empty dict and warn
                 warnings.warn(f"Could not parse YAML file {file_path}: {e}")
                 return {}
-
-
-class QuantizationAwareTrainingCallback(pl.Callback):
-    """Generic Callback for Quantization Aware Training (QAT) with PyTorch Lightning.
-
-    Allows specifying the model attribute name (e.g., 'alignnet', 'wavenet').
-    """
-
-    def __init__(
-        self,
-        model_attr: str = "alignnet",
-        start_epoch: int = 5,
-        quantization_backend: str = "fbgemm",
-        qconfig_dict: Optional[dict] = None,
-    ):
-        """Initialize the QuantizationAwareTrainingCallback.
-
-        Parameters
-        ----------
-        model_attr : str, default="alignnet"
-            Name of the model attribute to quantize.
-        start_epoch : int, default=5
-            Epoch to start quantization.
-        quantization_backend : str, default="fbgemm"
-            Backend for quantization.
-        qconfig_dict : Optional[dict], default=None
-            Quantization configuration dictionary.
-        """
-        super().__init__()
-        self.model_attr = model_attr
-        self.start_epoch = start_epoch
-        self.quantization_backend = quantization_backend
-        self.qconfig_dict = qconfig_dict
-        self.qat_enabled = False
-
-    def on_train_epoch_start(self, trainer, pl_module):
-        """Enable QAT at the start of training epoch."""
-        if not self.qat_enabled and trainer.current_epoch >= self.start_epoch:
-            self._enable_qat(pl_module)
-            self.qat_enabled = True
-
-    def _enable_qat(self, pl_module):
-        logger.info(f"Enabling Quantization Aware Training at epoch {self.start_epoch}")
-        torch.backends.quantized.engine = self.quantization_backend
-
-        if not hasattr(pl_module, self.model_attr):
-            raise AttributeError(f"Module {type(pl_module).__name__} has no attribute '{self.model_attr}'")
-        model = getattr(pl_module, self.model_attr)
-        model.qconfig = default_qat_qconfig
-
-        if self.qconfig_dict:
-            for module_name, qconfig in self.qconfig_dict.items():
-                module = model
-                for attr in module_name.split("."):
-                    if not hasattr(module, attr):
-                        raise AttributeError(f"Module {type(module).__name__} has no attribute '{attr}'")
-                    module = getattr(module, attr)
-                module.qconfig = qconfig
-
-        torch.quantization.prepare_qat(model, inplace=True)
-        logger.info("Model prepared for Quantization Aware Training")
-
-    def on_train_end(self, trainer, pl_module):
-        """Disable QAT at the end of training."""
-        if self.qat_enabled:
-            logger.info("Converting QAT model to quantized model...")
-            if not hasattr(pl_module, self.model_attr):
-                raise AttributeError(
-                    f"Module {type(pl_module).__name__} has no attribute '{self.model_attr}'"
-                )
-            model = getattr(pl_module, self.model_attr)
-            model.eval()
-            quantized_model = torch.quantization.convert(model)
-            quantized_path = f"{trainer.default_root_dir}/quantized_{self.model_attr}_model.pth"
-            torch.save(
-                {
-                    "model_state_dict": quantized_model.state_dict(),
-                    "model_architecture": type(quantized_model).__name__,
-                    "quantization_config": self.qconfig_dict,
-                    "backend": self.quantization_backend,
-                },
-                quantized_path,
-            )
-            logger.info(f"Quantized model saved to: {quantized_path}")
-            original_size = sum(p.numel() * 4 for p in model.parameters()) / 1024 / 1024
-            logger.info(f"Original model parameters: {original_size:.2f}MB equivalent")
-            logger.info("Quantized model should be ~4x smaller for int8 quantization")
 
 
 class LearningRateThresholdCallback(pl.Callback):
@@ -509,10 +421,13 @@ def noise_est(frame):
     std_2, mean_2 = torch.std_mean(corner_2)
     std_3, mean_3 = torch.std_mean(corner_3)
     std_4, mean_4 = torch.std_mean(corner_4)
-    stds = torch.tensor([std_1, std_2, std_3, std_4])
-    means = torch.tensor([mean_1, mean_2, mean_3, mean_4])
+    stds = torch.stack([std_1, std_2, std_3, std_4])
+    means = torch.stack([mean_1, mean_2, mean_3, mean_4])
     ind = torch.argmin(stds)
-    return stds[ind], means[ind], ind
+    # Use gather for vmap-friendly indexing
+    selected_std = torch.gather(stds, 0, ind.unsqueeze(0)).squeeze(0)
+    selected_mean = torch.gather(means, 0, ind.unsqueeze(0)).squeeze(0)
+    return selected_std, selected_mean, ind
 
 
 def detect_direction(frame):
@@ -900,6 +815,10 @@ def batched_crop(image_tensor: torch.Tensor, centers: torch.Tensor, crop_size: i
 def get_centers(image: torch.Tensor, crop_size: int) -> torch.Tensor:
     """Generate grid of center coordinates for cropping patches from an image.
 
+    This function generates centers using two methods and combines them:
+    1. Regular grid-based centers at fixed intervals
+    2. Refined centers based on brightest regions using pooling
+
     Parameters
     ----------
     image : torch.Tensor
@@ -910,17 +829,54 @@ def get_centers(image: torch.Tensor, crop_size: int) -> torch.Tensor:
     Returns
     -------
     torch.Tensor
-        Tensor of shape (N, 2) containing (x, y) center coordinates for non-overlapping crops.
+        Tensor of shape (N, 2) containing (x, y) center coordinates combining both
+        grid-based and refined bright-region centers.
     """
     H, W = image.shape
+
+    # --- Part 1: Regular grid centers ---
     x_coords = torch.arange(crop_size // 2, W, crop_size)
     y_coords = torch.arange(crop_size // 2, H, crop_size)
 
     # Create a grid of center coordinates
     grid_y, grid_x = torch.meshgrid(y_coords, x_coords, indexing="ij")
-    centers = torch.stack([grid_x.reshape(-1), grid_y.reshape(-1)], dim=1)  # Shape: [N, 2]
+    grid_centers = torch.stack([grid_x.reshape(-1), grid_y.reshape(-1)], dim=1)  # Shape: [N, 2]
 
-    return centers
+    # --- Part 2: Refined centers from bright regions ---
+    img = image.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+
+    # Mean pooling to find bright regions
+    pooled = F.avg_pool2d(img, kernel_size=160, stride=40)
+
+    pooled2d = pooled.squeeze(0).squeeze(0)  # (H', W')
+    H_p, W_p = pooled2d.shape
+
+    # Flatten and get top-30 indices
+    flat = pooled2d.flatten()
+    values, indices = torch.topk(flat, k=30)
+
+    # Convert flattened indices into pooled coords
+    coords = torch.stack([indices // W_p, indices % W_p], dim=1)  # y in pooled  # x in pooled
+
+    # Convert pooled coords -> original coords
+    refined_coords = coords * 40  # stride size
+
+    # Filter out points within 160px of any border
+    y = refined_coords[:, 0]
+    x = refined_coords[:, 1]
+
+    margin = 160
+    mask = (y >= margin) & (y < H - margin) & (x >= margin) & (x < W - margin)
+
+    refined_centers = refined_coords[mask]
+
+    # Swap x and y to match grid_centers format (x, y)
+    refined_centers = torch.stack([refined_centers[:, 1], refined_centers[:, 0]], dim=1)
+
+    # Combine both sets of centers
+    all_centers = torch.cat([grid_centers, refined_centers], dim=0)
+
+    return all_centers
 
 
 def single_conv(image, device="cuda"):
@@ -950,7 +906,9 @@ def single_conv(image, device="cuda"):
     not_donut = (1 - donut).bool().float().to(device)
     donut_mean = torch.mean(image * donut)
     not_donut_mean = torch.mean(image * not_donut)
-    not_donut_std = torch.std(image * not_donut)
+    # not_donut_std = torch.std(image * not_donut)
+    std, mean, ind = noise_est(image)
+    not_donut_std = std
     sigma_dev = abs(donut_mean - not_donut_mean) / not_donut_std
     return sigma_dev
 

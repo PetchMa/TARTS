@@ -188,6 +188,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         self.deg_per_pix = params["deg_per_pix"]
         self.alpha = params["alpha"]
         self.SCALE = params["adjustment_AlignNet"]
+        self.num_zernikes = len(params["noll_zk"])
 
         # Apply torch.compile to submodels if requested
         if compile_models:
@@ -628,23 +629,18 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         if keep_ind.sum() == 0:
             # No donuts detected, return zeros for Zernike coefficients
             # The final_layer will process the output, so we need to return the expected size
-            if self.final_layer == self.identity:
-                # If no final_layer, return 17 Zernike coefficients (WaveNet output size)
-                num_zernikes = 17
-            else:
-                # If final_layer is present, return the size it outputs
-                num_zernikes = self.final_layer[-1].out_features
+            # If final_layer is present, return the size it outputs
             self.fx = [torch.tensor(0)]
             self.fy = [torch.tensor(0)]
             self.intra = [torch.tensor(0)]
             self.band = [torch.tensor(0)]
             self.SNR = [torch.tensor(0)]
             self.centers = [torch.tensor([0, 0])]
-            self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
+            self.total_zernikes = torch.zeros((1, self.num_zernikes), device=self.device_val)
             self.cropped_image = torch.zeros((1, self.CROP_SIZE, self.CROP_SIZE), device=self.device_val)
-            self.total_zernikes = torch.zeros((1, num_zernikes), device=self.device_val)
+            self.total_zernikes = torch.zeros((1, self.num_zernikes), device=self.device_val)
             self.ood_scores = torch.tensor([float("nan")], device=self.device_val)
-            return torch.zeros((1, num_zernikes), device=self.device_val)
+            return torch.zeros((1, self.num_zernikes), device=self.device_val)
 
         cropped_image = cropped_image[keep_ind]
 
