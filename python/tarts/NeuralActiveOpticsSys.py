@@ -17,6 +17,7 @@ from lsst.ip.isr import AssembleCcdTask
 from lsst.meas.algorithms import subtractBackground
 from lsst.obs.lsst import LsstCam
 from lsst.obs.lsst.cameraTransforms import LsstCameraTransforms
+from lsst.pex.exceptions import LengthError
 from torch import nn, vmap
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
@@ -994,7 +995,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             new = assembleCcdTask.assembleCcd(exposure)
             SubtractBackground = subtractBackground.SubtractBackgroundTask()
             SubtractBackground.run(new)
-        except (AttributeError, RuntimeError, ValueError) as e:
+        except (AttributeError, RuntimeError, ValueError, LengthError) as e:
             logger.warning(f"Switching to no CCD assembly: {e}")
             new = exposure
             SubtractBackground = subtractBackground.SubtractBackgroundTask()
