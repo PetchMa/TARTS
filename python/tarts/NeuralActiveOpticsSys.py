@@ -326,7 +326,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                     data_dict["ood_score"] = torch.tensor([float("nan")]).clone().detach()
 
                 internal_data.append(data_dict)
-
+        logger.info(f"recomputed! {len(internal_data)}")
         return internal_data
 
     def filter_image_by_frequency_torch(self, image, kmin=0, kmax=float("inf"), sigma_frac=0.1, device=None):
