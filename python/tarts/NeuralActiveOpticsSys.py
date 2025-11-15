@@ -307,7 +307,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             # Ensure these are not None before indexing
             if self.cropped_image is None or self.total_zernikes is None:
                 return internal_data
-
+            self.logger.info(f"NUMBER OF IN INTERNAL donuts: {num_donuts}")
             for i in range(num_donuts):
                 data_dict = {
                     "cropped_image": self.cropped_image[i].clone().detach(),
@@ -323,7 +323,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 if self.ood_scores is not None and i < len(self.ood_scores):
                     data_dict["ood_score"] = self.ood_scores[i].clone().detach()
                 else:
-                    data_dict["ood_score"] = None
+                    data_dict["ood_score"] = torch.tensor([float("nan")]).clone().detach()
 
                 internal_data.append(data_dict)
 
