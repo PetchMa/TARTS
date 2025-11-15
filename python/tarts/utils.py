@@ -821,7 +821,7 @@ def get_centers(image: torch.Tensor, crop_size: int) -> torch.Tensor:
 
     Parameters
     ----------
-    image : torch.Tensor
+    image : torch.Tensor or np.ndarray
         Input image tensor of shape (H, W).
     crop_size : int
         Size of square crops to generate centers for.
@@ -832,6 +832,10 @@ def get_centers(image: torch.Tensor, crop_size: int) -> torch.Tensor:
         Tensor of shape (N, 2) containing (x, y) center coordinates combining both
         grid-based and refined bright-region centers.
     """
+    # Convert to torch tensor if numpy array
+    if isinstance(image, np.ndarray):
+        image = torch.from_numpy(image)
+
     H, W = image.shape
 
     # --- Part 1: Regular grid centers ---
@@ -846,20 +850,21 @@ def get_centers(image: torch.Tensor, crop_size: int) -> torch.Tensor:
     img = image.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
 
     # Mean pooling to find bright regions
-    pooled = F.avg_pool2d(img, kernel_size=160, stride=40)
+    stride = 40
+    pooled = F.avg_pool2d(img, kernel_size=160, stride=stride)
 
     pooled2d = pooled.squeeze(0).squeeze(0)  # (H', W')
     H_p, W_p = pooled2d.shape
 
     # Flatten and get top-30 indices
     flat = pooled2d.flatten()
-    values, indices = torch.topk(flat, k=30)
+    values, indices = torch.topk(flat, k=10)
 
     # Convert flattened indices into pooled coords
     coords = torch.stack([indices // W_p, indices % W_p], dim=1)  # y in pooled  # x in pooled
 
     # Convert pooled coords -> original coords
-    refined_coords = coords * 40  # stride size
+    refined_coords = coords * stride  # stride size
 
     # Filter out points within 160px of any border
     y = refined_coords[:, 0]
@@ -875,7 +880,7 @@ def get_centers(image: torch.Tensor, crop_size: int) -> torch.Tensor:
 
     # Combine both sets of centers
     all_centers = torch.cat([grid_centers, refined_centers], dim=0)
-
+    all_centers = grid_centers
     return all_centers
 
 
@@ -906,9 +911,7 @@ def single_conv(image, device="cuda"):
     not_donut = (1 - donut).bool().float().to(device)
     donut_mean = torch.mean(image * donut)
     not_donut_mean = torch.mean(image * not_donut)
-    # not_donut_std = torch.std(image * not_donut)
-    std, mean, ind = noise_est(image)
-    not_donut_std = std
+    not_donut_std = torch.std(image * not_donut)
     sigma_dev = abs(donut_mean - not_donut_mean) / not_donut_std
     return sigma_dev
 
