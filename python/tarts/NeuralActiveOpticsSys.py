@@ -307,7 +307,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             # Ensure these are not None before indexing
             if self.cropped_image is None or self.total_zernikes is None:
                 return internal_data
-            self.logger.info(f"NUMBER OF IN INTERNAL donuts: {num_donuts}")
+            logger.info(f"NUMBER OF IN INTERNAL donuts: {num_donuts}")
             for i in range(num_donuts):
                 data_dict = {
                     "cropped_image": self.cropped_image[i].clone().detach(),
