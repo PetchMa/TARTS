@@ -850,7 +850,7 @@ def get_centers(image: torch.Tensor, crop_size: int) -> torch.Tensor:
     img = image.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
 
     # Mean pooling to find bright regions
-    stride = 40
+    stride = 10
     pooled = F.avg_pool2d(img, kernel_size=160, stride=stride)
 
     pooled2d = pooled.squeeze(0).squeeze(0)  # (H', W')
