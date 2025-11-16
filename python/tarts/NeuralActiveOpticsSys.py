@@ -301,7 +301,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         internal_data: List[Dict[str, Any]] = []
 
         # Check if we have valid data (not NaN-filled)
-        if len(self.fx) > 0 and isinstance(self.fx, list) and not torch.isnan(self.fx[0]):
+        if len(self.fx) > 0:
             num_donuts = len(self.fx)
 
             # Ensure these are not None before indexing
