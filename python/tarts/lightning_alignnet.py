@@ -96,6 +96,7 @@ class AlignNetSystem(pl.LightningModule):
         alpha: float = 0,
         lr: float = 1e-3,
         lr_schedule: bool = False,
+        weight_decay: float = 1e-4,
         device="cuda",
         pretrained: bool = False,
     ) -> None:
@@ -124,11 +125,14 @@ class AlignNetSystem(pl.LightningModule):
             A value of 0 disables the regularization.
 
         lr : float, optional, default=1e-3
-            The initial learning rate used by the Adam optimizer.
+            The initial learning rate used by the AdamW optimizer.
 
         lr_schedule : bool, optional, default=False
             If True, a learning rate scheduler (ReduceLROnPlateau) will be used to adjust the learning rate
             based on the validation loss during training.
+
+        weight_decay : float, optional, default=1e-4
+            The weight decay (L2 penalty) coefficient for the AdamW optimizer.
 
         device : str, optional, default='cuda'
             The device to use for computation ('cuda' or 'cpu').
@@ -232,7 +236,9 @@ class AlignNetSystem(pl.LightningModule):
 
     def configure_optimizers(self) -> Any:
         """Configure the optimizer."""
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
+        optimizer = torch.optim.AdamW(
+            self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay
+        )
 
         if self.hparams.lr_schedule:
             return {
