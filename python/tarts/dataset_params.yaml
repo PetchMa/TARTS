@@ -8,6 +8,9 @@ mm_pix : 0.01
 alpha: 1
 max_seq_len: 200
 butler_repo_path: 'butler'
+
+# Model architecture parameters
+cnn_model: 'mobilenetv4_conv_small'  # Options: mobilenetv4_conv_small, resnet18, resnet34, resnet50
 finetune_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain'
 finetune_filepath_train: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain/train/'
 finetune_filepath_val: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain/val/'
