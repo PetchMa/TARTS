@@ -335,7 +335,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 "band": torch.tensor(0).clone().detach(),
                 "SNR": torch.tensor(0).clone().detach(),
                 "centers": torch.tensor([0, 0]).clone().detach(),
-                "zernikes": torch.zeros((self.num_zernikes,), device=self.device_val).clone().detach(),
+                "zernikes": torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
+                .clone()
+                .detach(),
                 "ood_score": torch.tensor([float("nan")]).clone().detach(),
             }
             internal_data.append(data_dict)
