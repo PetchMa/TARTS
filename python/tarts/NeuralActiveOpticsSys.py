@@ -296,18 +296,15 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         --------
         list of dict
             List of dictionaries, each containing the data for one donut.
-            Returns empty list if no data is available.
+            Returns list with default values if no data is available.
         """
         internal_data: List[Dict[str, Any]] = []
 
         # Check if we have valid data (not NaN-filled)
-        if len(self.fx) > 0:
+        if len(self.fx) > 0 and self.cropped_image is not None and self.total_zernikes is not None:
             num_donuts = len(self.fx)
 
             # Ensure these are not None before indexing
-            if self.cropped_image is None or self.total_zernikes is None:
-                return internal_data
-            logger.info(f"NUMBER OF IN INTERNAL donuts: {num_donuts}")
             for i in range(num_donuts):
                 data_dict = {
                     "cropped_image": self.cropped_image[i].clone().detach(),
@@ -326,7 +323,22 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                     data_dict["ood_score"] = torch.tensor([float("nan")]).clone().detach()
 
                 internal_data.append(data_dict)
-        logger.info(f"recomputed! {len(internal_data)}")
+        else:
+            # Fill with default values when data is not available
+            data_dict = {
+                "cropped_image": torch.zeros((self.CROP_SIZE, self.CROP_SIZE), device=self.device_val)
+                .clone()
+                .detach(),
+                "fx": torch.tensor(0).clone().detach(),
+                "fy": torch.tensor(0).clone().detach(),
+                "intra": torch.tensor(0).clone().detach(),
+                "band": torch.tensor(0).clone().detach(),
+                "SNR": torch.tensor(0).clone().detach(),
+                "centers": torch.tensor([0, 0]).clone().detach(),
+                "zernikes": torch.zeros((self.num_zernikes,), device=self.device_val).clone().detach(),
+                "ood_score": torch.tensor([float("nan")]).clone().detach(),
+            }
+            internal_data.append(data_dict)
         return internal_data
 
     def filter_image_by_frequency_torch(self, image, kmin=0, kmax=float("inf"), sigma_frac=0.1, device=None):
