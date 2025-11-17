@@ -156,6 +156,7 @@ class WaveNetSystem(pl.LightningModule):
         alpha: float = 0,
         lr: float = 1e-3,
         lr_schedule: bool = False,
+        weight_decay: float = 1e-4,
         device: str = "cuda",
         pretrained: bool = False,
     ) -> None:
@@ -177,9 +178,11 @@ class WaveNetSystem(pl.LightningModule):
         alpha: float, default=0
             Weight for the L2 penalty.
         lr: float, default=1e-3
-            The initial learning rate for Adam.
+            The initial learning rate for AdamW.
         lr_schedule: bool, default=True
             Whether to use the ReduceLROnPlateau learning rate scheduler.
+        weight_decay: float, default=1e-4
+            The weight decay (L2 penalty) coefficient for the AdamW optimizer.
         device: str, default='cuda'
             The device to use for computation ('cuda' or 'cpu').
         pretrained: bool, default=False
@@ -291,7 +294,9 @@ class WaveNetSystem(pl.LightningModule):
 
     def configure_optimizers(self) -> Any:
         """Configure the optimizer."""
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=1e-4)
+        optimizer = torch.optim.AdamW(
+            self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay
+        )
         # optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
 
         if self.hparams.lr_schedule:
