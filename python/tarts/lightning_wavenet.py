@@ -23,7 +23,7 @@ from .constants import (
     INTRA_STD,
 )
 from .dataloader import Donuts, Donuts_Fullframe
-from .utils import convert_zernikes_deploy
+from .utils import convert_zernikes
 from .wavenet import WaveNet
 
 
@@ -234,8 +234,8 @@ class WaveNetSystem(pl.LightningModule):
         zk_pred, zk_true = self.predict_step(batch, batch_idx)
 
         # convert to FWHM contributions
-        zk_pred = convert_zernikes_deploy(zk_pred)
-        zk_true = convert_zernikes_deploy(zk_true)
+        zk_pred = convert_zernikes(zk_pred)
+        zk_true = convert_zernikes(zk_true)
 
         # pull out the weights from the final linear layer
         *_, A, _ = self.wavenet.predictor.parameters()
@@ -263,8 +263,8 @@ class WaveNetSystem(pl.LightningModule):
         zk_pred, zk_true = self.predict_step(batch, batch_idx)
 
         # convert to FWHM contributions
-        zk_pred = convert_zernikes_deploy(zk_pred, device=self.device)
-        zk_true = convert_zernikes_deploy(zk_true, device=self.device)
+        zk_pred = convert_zernikes(zk_pred)
+        zk_true = convert_zernikes(zk_true)
 
         # pull out the weights from the final linear layer
         *_, A, _ = self.wavenet.predictor.parameters()
