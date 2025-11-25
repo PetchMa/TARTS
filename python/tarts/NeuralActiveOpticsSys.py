@@ -99,6 +99,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         """
         super().__init__()
         self.save_hyperparameters()
+        self.log = logging.getLogger("lsst.tarts.NeuralActiveOpticsSys")
         self.device_val = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Initialize frequency filtering parameters
@@ -132,10 +133,11 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             logger.info("Continuing without OOD detection...")
 
         # Load parameters from YAML file once
-        with open(dataset_params, "r") as yaml_file:
+        with open(os.path.expandvars(dataset_params), 'r') as yaml_file:
             params = yaml.safe_load(yaml_file)
 
         if wavenet_path is None:
+            self.log.warning("No WaveNet path provided, initializing new model.")
             self.wavenet_model = WaveNetSystem(pretrained=pretrained).to(self.device_val)
         else:
             # Always use checkpoint loading - the pretrained parameter doesn't matter
@@ -145,6 +147,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             ).to(self.device_val)
 
         if alignet_path is None:
+            self.log.warning("No AlignNet path provided, initializing new model.")
             self.alignnet_model = AlignNetSystem(pretrained=pretrained).to(self.device_val)
         else:
             # Always use checkpoint loading - the pretrained parameter doesn't matter
@@ -157,6 +160,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         self.aggregator_on = aggregator_on
         logger.debug(f"Using device: {self.device_val}")
         if aggregatornet_path is None:
+            self.log.warning("No AggregatorNet path provided, initializing new model.")
             d_model = params["aggregator_model"]["d_model"]
             nhead = params["aggregator_model"]["nhead"]
             num_layers = params["aggregator_model"]["num_layers"]
