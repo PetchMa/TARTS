@@ -1,14 +1,24 @@
 """Pytorch DataSet for the AOS simulations."""
 
+# Standard library imports
 import glob
-from typing import Any, Dict
+import logging
+import os
 import pickle
+import json
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+# Third-party imports
 import numpy as np
 import torch
 from astropy.table import Table
-from .utils import transform_inputs, shift_offcenter
 from torch.utils.data import Dataset
-import os
+
+# Local/application imports
+from .constants import DEFAULT_NOLL_ZK, DEFAULT_TRAIN_FRACTION
+from .utils import shift_offcenter, transform_inputs, augment_data_torch, add_random_hot_pixel
+
+logger = logging.getLogger(__name__)
 
 
 class Donuts(Dataset):
@@ -87,11 +97,7 @@ class Donuts(Dataset):
 
         # get a list of all the observations
         all_image_files = glob.glob(f"{data_dir}/images/*")
-        obs_ids = list(
-            set(
-                [int(file.split("/")[-1].split(".")[1][3:]) for file in all_image_files]
-            )
-        )
+        obs_ids = list(set([int(file.split("/")[-1].split(".")[1][3:]) for file in all_image_files]))
 
         # get the table of metadata for each observation
         observations = Table.read(f"{data_dir}/opSimTable.parquet")
@@ -123,11 +129,7 @@ class Donuts(Dataset):
         self.adjustment_factor = adjustment_factor
         # partition the image files
         self.image_files = {
-            mode: [
-                file
-                for file in all_image_files
-                if int(file.split("/")[-1].split(".")[1][3:]) in ids
-            ]
+            mode: [file for file in all_image_files if int(file.split("/")[-1].split(".")[1][3:]) in ids]
             for mode, ids in self.obs_ids.items()
         }
 
@@ -172,9 +174,7 @@ class Donuts(Dataset):
         pntId, obsId, objId = img_file.split("/")[-1].split(".")[:3]
 
         # get the catalog for this observation
-        catalog = Table.read(
-            f"{self.settings['data_dir']}/catalogs/{pntId}.catalog.parquet"
-        )
+        catalog = Table.read(f"{self.settings['data_dir']}/catalogs/{pntId}.catalog.parquet")
 
         # get the row for this source
         row = catalog[catalog["objectId"] == int(objId[3:])][0]
@@ -186,9 +186,7 @@ class Donuts(Dataset):
         intra = "SW1" in row["detector"]
 
         # get the observed band
-        obs_row = self.observations[
-            self.observations["observationId"] == int(obsId[3:])
-        ]
+        obs_row = self.observations[self.observations["observationId"] == int(obsId[3:])]
         band = "ugrizy".index(obs_row["lsstFilter"].item())
 
         # load the zernikes
@@ -197,7 +195,7 @@ class Donuts(Dataset):
                 f"{self.settings['data_dir']}/zernikes/"
                 f"{pntId}.{obsId}.detector{row['detector'][:3]}.zernikes.npy"
             ),
-            allow_pickle=True
+            allow_pickle=True,
         )
 
         # load the degrees of freedom
@@ -216,14 +214,9 @@ class Donuts(Dataset):
         # convert everything to tensors
         img = torch.from_numpy(img).float()
         # shift the image
-        img_adjusted, offset_amount = shift_offcenter(
-            img, adjust=self.adjustment_factor, return_offset=True
-        )
+        img_adjusted, offset_amount = shift_offcenter(img, adjust=self.adjustment_factor, return_offset=True)
         # track the offset vector and renormalise the vector amount
-        offset_vec = (
-            np.array(np.array(offset_amount).astype(np.float32))
-            / self.adjustment_factor
-        )
+        offset_vec = np.array(np.array(offset_amount).astype(np.float32)) / self.adjustment_factor
         # compute the radial offset factor (vector norm)
         offset_r = np.sqrt(offset_amount[0] ** 2 + offset_amount[1] ** 2)
         offset_r = np.array(offset_r.astype(np.float32))[None] / self.adjustment_factor
@@ -231,8 +224,8 @@ class Donuts(Dataset):
         # record the meta data
         fx = torch.FloatTensor([fx])
         fy = torch.FloatTensor([fy])
-        intra = torch.FloatTensor([intra])  # type: ignore
-        band = torch.FloatTensor([band])  # type: ignore
+        intra = torch.FloatTensor([intra])
+        band = torch.FloatTensor([band])
         zernikes = torch.from_numpy(zernikes).float()
         dof = torch.from_numpy(dof).float()
 
@@ -294,10 +287,13 @@ class Donuts_Fullframe(Dataset):
         transform: bool = True,
         adjustment_factor=0,
         data_dir: str = "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain/",
-        noll_zk: list = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 27, 28],
+        noll_zk: Optional[List[int]] = None,
         coral_filepath: str = "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/coral/",
         coral_mode: bool = False,
         mask_mode: bool = False,
+        augment: bool = False,
+        augment_scale: float = 0.1,
+        augment_kmin: float = 0.1,
         **kwargs: Any,
     ) -> None:
         """Load the simulated ImSim donuts and zernikes in a Pytorch Dataset.
@@ -313,14 +309,25 @@ class Donuts_Fullframe(Dataset):
             RADIAL factor used to shift the image during loading.
         data_dir: str, default=aos_sims
             Location of the data directory.
-        noll_zk: list, default=[4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 27, 28]
+        noll_zk: Optional[List[int]], default=None
             List of Noll Zernike indices to include in the dataset.
+            If None, defaults to [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 27, 28].
         coral_filepath: str, default="/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/coral/"
             Path to the coral dataset directory.
         coral_mode: bool, default=False
             Whether to enable coral mode for domain adaptation.
         mask_mode: bool, default=False
             Whether to use mask mode for zernike extraction.
+        augment: bool, default=False
+            Whether to apply frequency-based augmentation. Requires coral_mode=True.
+            When enabled, randomly augments 50% of samples by injecting high-frequency
+            structure from coral images into simulation images.
+        augment_scale: float, default=0.1
+            (Deprecated) Scaling factor parameter. The scale is now randomly sampled
+            uniformly between 0.1 and 1.0 for each augmentation. This parameter is
+            kept for backward compatibility but is not used.
+        augment_kmin: float, default=0.1
+            Minimum frequency magnitude to extract from coral images for augmentation.
         """
         self.settings = {
             "mode": mode,
@@ -328,9 +335,9 @@ class Donuts_Fullframe(Dataset):
             "data_dir": data_dir,
         }
         if self.settings["mode"] == "train":
-            self.image_dir = data_dir + '/train'
+            self.image_dir = data_dir + "/train"
         if self.settings["mode"] == "val":
-            self.image_dir = data_dir + '/val'
+            self.image_dir = data_dir + "/val"
         self.mask_mode = mask_mode
         self.image_files = []
         # Loop through all files and subdirectories
@@ -338,17 +345,26 @@ class Donuts_Fullframe(Dataset):
             for file in files:
                 file_path = os.path.join(root, file)
                 self.image_files.append(file_path)
-        print(self.image_dir)
+        logger.debug(f"Image directory: {self.image_dir}")
         self.coral_filepath = coral_filepath
         self.coral_mode = coral_mode
+        self.augment = augment
+        self.augment_scale = augment_scale
+        self.augment_kmin = augment_kmin
+
+        # Augmentation requires coral_mode to be enabled
+        if self.augment and not self.coral_mode:
+            logger.warning("augment=True requires coral_mode=True. Disabling augmentation.")
+            self.augment = False
+
         if coral_mode:
             self.coral_image_files = []
             # Use a temporary variable to avoid modifying the original path
             coral_data_path = coral_filepath
             if self.settings["mode"] == "train":
-                coral_data_path += '/train'
+                coral_data_path += "/train"
             if self.settings["mode"] == "val":
-                coral_data_path += '/val'
+                coral_data_path += "/val"
             for root, _, files in os.walk(coral_data_path):
                 for file in files:
                     file_path = os.path.join(root, file)
@@ -357,16 +373,18 @@ class Donuts_Fullframe(Dataset):
         if self.settings["mode"] == "train":
             # self.image_files = self.image_files[: int(0.1 * len(self.image_files))]
 
-            self.image_files = self.image_files[: int(0.5 * len(self.image_files))]
+            self.image_files = self.image_files[: int(DEFAULT_TRAIN_FRACTION * len(self.image_files))]
 
-        self.noll_zk = np.array(noll_zk)-4
+        if noll_zk is None:
+            noll_zk = DEFAULT_NOLL_ZK
+        self.noll_zk = np.array(noll_zk) - 4
         self.adjustment_factor = adjustment_factor
 
     def __len__(self) -> int:
         """Return length of this Dataset."""
-        return len(self.image_files)  # type: ignore
+        return len(self.image_files)
 
-    def sample_coral(self) -> Dict[str, torch.Tensor]:
+    def sample_coral(self) -> Dict[str, Any]:
         """Sample a coral image randomly."""
         # Check if coral files are available
         if not self.coral_image_files or len(self.coral_image_files) == 0:
@@ -379,7 +397,7 @@ class Donuts_Fullframe(Dataset):
         for attempt in range(max_retries):
             try:
                 # Re-check availability in case files were deleted
-                if len(self.coral_image_files) == 0:
+                if not self.coral_image_files:
                     raise RuntimeError("All coral image files have been removed due to corruption.")
 
                 idx = np.random.randint(0, len(self.coral_image_files))
@@ -393,13 +411,13 @@ class Donuts_Fullframe(Dataset):
                 break  # Successfully loaded, exit retry loop
             except (EOFError, IOError, OSError) as e:
                 # File is corrupted, truncated, or missing - delete it
-                print(f"⚠️  Corrupted coral file detected: {img_file}. Error: {e}. Deleting...")
+                logger.warning(f"Corrupted coral file detected: {img_file}. Error: {e}. Deleting...")
                 try:
                     if os.path.exists(img_file):
                         os.remove(img_file)
-                        print(f"✓ Deleted corrupted file: {img_file}")
-                except Exception as delete_error:
-                    print(f"⚠️  Failed to delete {img_file}: {delete_error}")
+                        logger.info(f"Deleted corrupted file: {img_file}")
+                except (OSError, PermissionError) as delete_error:
+                    logger.warning(f"Failed to delete {img_file}: {delete_error}")
 
                 # Remove from list to avoid trying again
                 if img_file in self.coral_image_files:
@@ -424,7 +442,8 @@ class Donuts_Fullframe(Dataset):
         # get the intra/extra flag
         intra = torch.tensor(state["intra"]).int()
 
-        band = torch.tensor(state["band"]).int().item()
+        band_tensor = torch.tensor(state["band"]).int()
+        band = band_tensor.item()
         img = torch.tensor(state["image_aligned"])
 
         # Get zernikes using noll_zk indexing
@@ -433,28 +452,42 @@ class Donuts_Fullframe(Dataset):
 
         # standardize all the inputs for the neural net
         if self.settings["transform"]:
-            img, fx, fy, intra, band = transform_inputs(  # type: ignore
-                img,
-                fx,
-                fy,
-                intra,
-                band,
+            # Convert tensors to numpy for transform_inputs
+            img_np = img.cpu().numpy() if isinstance(img, torch.Tensor) else img
+            fx_val = float(fx.item() if isinstance(fx, torch.Tensor) else fx)
+            fy_val = float(fy.item() if isinstance(fy, torch.Tensor) else fy)
+            intra_val = bool(intra.item() if isinstance(intra, torch.Tensor) else intra)
+            band_val = int(band_tensor.item() if isinstance(band_tensor, torch.Tensor) else band)
+            img_out, fx_out, fy_out, intra_out, band_out = transform_inputs(
+                img_np,
+                fx_val,
+                fy_val,
+                intra_val,
+                band_val,
             )
-
-        # convert everything to tensors
-        img = img.float()
-        # get meta data
-        fx = torch.FloatTensor([fx])
-        fy = torch.FloatTensor([fy])
-        intra = torch.FloatTensor([intra])  # type: ignore
-        band = torch.FloatTensor([band])  # type: ignore
+            # convert everything to tensors
+            img = torch.from_numpy(img_out).float() if isinstance(img_out, np.ndarray) else img_out.float()
+            # get meta data
+            fx_tensor = torch.FloatTensor([float(fx_out)])
+            fy_tensor = torch.FloatTensor([float(fy_out)])
+            intra_tensor = torch.FloatTensor([float(intra_out)])
+            band_tensor = torch.FloatTensor([float(band_out)])
+        else:
+            # convert everything to tensors if not transformed
+            img = img.float()
+            fx_tensor = torch.FloatTensor([float(fx.item() if isinstance(fx, torch.Tensor) else fx)])
+            fy_tensor = torch.FloatTensor([float(fy.item() if isinstance(fy, torch.Tensor) else fy)])
+            intra_tensor = torch.FloatTensor(
+                [float(intra.item() if isinstance(intra, torch.Tensor) else intra)]
+            )
+            band_tensor = torch.FloatTensor([float(band)])
         zernikes = zernikes.float()[0, :]
         coral_output = {
             "coral_image": img,
-            "coral_field_x": fx,
-            "coral_field_y": fy,
-            "coral_intrafocal": intra,
-            "coral_band": band,
+            "coral_field_x": fx_tensor,
+            "coral_field_y": fy_tensor,
+            "coral_intrafocal": intra_tensor,
+            "coral_band": band_tensor,
             "coral_zernikes": zernikes,
         }
         return coral_output
@@ -502,52 +535,61 @@ class Donuts_Fullframe(Dataset):
         else:
             zernikes = torch.tensor(state["zk_true"])[:, self.noll_zk]
 
-        band = torch.tensor(state["band"]).int().item()
+        band_tensor = torch.tensor(state["band"]).int()
+        band = band_tensor.item()
         img = torch.tensor(state["image_aligned"])
 
         # standardize all the inputs for the neural net
         if self.settings["transform"]:
-            img, fx, fy, intra, band = transform_inputs(  # type: ignore
-                img,
-                fx,
-                fy,
-                intra,
-                band,
+            # Convert tensors to numpy for transform_inputs
+            img_np = img.cpu().numpy() if isinstance(img, torch.Tensor) else img
+            fx_val = float(fx.item() if isinstance(fx, torch.Tensor) else fx)
+            fy_val = float(fy.item() if isinstance(fy, torch.Tensor) else fy)
+            intra_val = bool(intra.item() if isinstance(intra, torch.Tensor) else intra)
+            band_val = int(band_tensor.item() if isinstance(band_tensor, torch.Tensor) else band)
+            img_out, fx_out, fy_out, intra_out, band_out = transform_inputs(
+                img_np,
+                fx_val,
+                fy_val,
+                intra_val,
+                band_val,
             )
-
-        # convert everything to tensors
-        img = img.float()
+            # convert everything to tensors
+            img = torch.from_numpy(img_out).float() if isinstance(img_out, np.ndarray) else img_out.float()
+            # get meta data
+            fx_tensor = torch.FloatTensor([float(fx_out)])
+            fy_tensor = torch.FloatTensor([float(fy_out)])
+            intra_tensor = torch.FloatTensor([float(intra_out)])
+            band_tensor = torch.FloatTensor([float(band_out)])
+        else:
+            # convert everything to tensors if not transformed
+            img = img.float()
+            fx_tensor = torch.FloatTensor([float(fx.item() if isinstance(fx, torch.Tensor) else fx)])
+            fy_tensor = torch.FloatTensor([float(fy.item() if isinstance(fy, torch.Tensor) else fy)])
+            intra_tensor = torch.FloatTensor(
+                [float(intra.item() if isinstance(intra, torch.Tensor) else intra)]
+            )
+            band_tensor = torch.FloatTensor([float(band)])
 
         # Apply image shifting only in train mode and when adjustment_factor > 0
         if self.settings["mode"] == "train" and self.adjustment_factor > 0:
-            img, offset_amount = shift_offcenter(
-                img, adjust=self.adjustment_factor, return_offset=True
-            )
+            img, offset_amount = shift_offcenter(img, adjust=self.adjustment_factor, return_offset=True)
             # Add offset information to output
-            offset_vec = (
-                np.array(np.array(offset_amount).astype(np.float32))
-                / self.adjustment_factor
-            )
+            offset_vec = np.array(np.array(offset_amount).astype(np.float32)) / self.adjustment_factor
             offset_r = np.sqrt(offset_amount[0] ** 2 + offset_amount[1] ** 2)
             offset_r = np.array(offset_r.astype(np.float32)) / self.adjustment_factor
         else:
             offset_amount = [0, 0]
             offset_vec = np.array([0.0, 0.0])
             offset_r = np.array(0.0)
-
-        # get meta data
-        fx = torch.FloatTensor([fx])
-        fy = torch.FloatTensor([fy])
-        intra = torch.FloatTensor([intra])  # type: ignore
-        band = torch.FloatTensor([band])  # type: ignore
         zernikes = zernikes.float()[0, :]
 
         output = {
             "image": img,
-            "field_x": fx,
-            "field_y": fy,
-            "intrafocal": intra,
-            "band": band,
+            "field_x": fx_tensor,
+            "field_y": fy_tensor,
+            "intrafocal": intra_tensor,
+            "band": band_tensor,
             "zernikes": zernikes,
             "offset": offset_amount,
             "offset_vec": offset_vec,
@@ -556,6 +598,51 @@ class Donuts_Fullframe(Dataset):
         if self.coral_mode:
             coral_output = self.sample_coral()
             output.update(coral_output)
+
+            # Apply augmentations if enabled (only in training mode)
+            if self.augment and self.settings["mode"] == "train":
+                # Apply frequency-based augmentation 50% of the time
+                if torch.rand(1).item() > 0.5:
+                    try:
+                        # Randomly sample scale between 0.1 and 1.0 uniformly
+                        random_scale = torch.empty(1).uniform_(0.5, 1.0).item()
+                        # Apply augmentation (function handles device, shape, and dtype internally)
+                        augmented_img = augment_data_torch(
+                            img, coral_output["coral_image"], scale=random_scale, kmin=self.augment_kmin
+                        )
+
+                        # Ensure augmented image matches original image's dtype and device
+                        augmented_img = augmented_img.to(dtype=img.dtype, device=img.device)
+
+                        # Restore original shape if img had extra dimensions
+                        original_shape = img.shape
+                        if augmented_img.shape != original_shape:
+                            # Add back channel/batch dimensions if needed
+                            while len(augmented_img.shape) < len(original_shape):
+                                augmented_img = augmented_img.unsqueeze(0)
+
+                        output["image"] = augmented_img
+                    except Exception as e:
+                        # If augmentation fails, use original image and log warning
+                        logger.warning(f"Frequency augmentation failed, using original image: {e}")
+                        # output["image"] remains as img
+
+                # Apply hot pixel augmentation 10% of the time (independent of frequency augmentation)
+                # This can be applied to the original image or the frequency-augmented image
+                try:
+                    current_img = output.get("image", img)
+                    hot_pixel_img = add_random_hot_pixel(
+                        current_img, sigma=0.05, prob=0.1, min_scale=5.0, max_scale=20
+                    )
+                    # Ensure dtype and device match (function preserves device, but ensure dtype consistency)
+                    if hot_pixel_img.dtype != img.dtype:
+                        hot_pixel_img = hot_pixel_img.to(dtype=img.dtype)
+                    output["image"] = hot_pixel_img
+                except Exception as e:
+                    # If hot pixel augmentation fails, keep current image and log warning
+                    logger.warning(f"Hot pixel augmentation failed: {e}")
+                    # output["image"] remains as current_img
+
         return output
 
 
@@ -585,6 +672,10 @@ class zernikeDataset(Dataset):
     return_true : bool, optional, default=False
         Whether to return the true Zernike coefficients (`True`)
         or the estimated coefficients (`False`).
+    coral_mode : bool, optional, default=False
+        Whether to enable coral mode for sampling real data alongside simulations.
+    coral_filepath : str, optional, default='.../LSST_FULL_FRAME/aggregator_real/'
+        Path to the directory containing real/coral aggregator data files.
 
     Attributes
     ----------
@@ -621,6 +712,8 @@ class zernikeDataset(Dataset):
         data_dir="/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator/",
         alpha=1e-3,
         return_true=False,
+        coral_mode=False,
+        coral_filepath="/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator_real/",
     ):
         """Initialize the zernikeDataset.
 
@@ -636,13 +729,20 @@ class zernikeDataset(Dataset):
             Parameter used for adjusting Zernike coefficients during processing.
         return_true : bool, optional, default=False
             Whether to return the true Zernike coefficients or estimated coefficients.
+        coral_mode : bool, optional, default=False
+            Whether to enable coral mode for real data sampling.
+        coral_filepath : str, optional
+            Path to the real/coral aggregator dataset directory.
         """
         self.max_seq_length = seq_length
+        self.coral_mode = coral_mode
+        self.coral_filepath = coral_filepath
+
         # Loop through all files and subdirectories
         if train:
-            self.image_dir = data_dir + '/train'
+            self.image_dir = data_dir + "/train"
         else:
-            self.image_dir = data_dir + '/train'
+            self.image_dir = data_dir + "/train"
 
         self.filename = []
         for root, _, files in os.walk(self.image_dir):
@@ -653,18 +753,158 @@ class zernikeDataset(Dataset):
         if train:
             self.filename = self.filename[: int(0.8 * len(self.filename))]
         else:
-            self.filename = self.filename[int(0.8 * len(self.filename)):]
+            self.filename = self.filename[int(0.8 * len(self.filename)) :]
 
         self.num_samples = len(self.filename)
         self.alpha = alpha
         self.return_true = return_true
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def __len__(self):
+        # Load coral files if coral_mode is enabled
+        if self.coral_mode:
+            self.coral_files = []
+            coral_data_path = coral_filepath
+            if train:
+                coral_data_path += "/train"
+            else:
+                coral_data_path += "/val"
+
+            for root, _, files in os.walk(coral_data_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    self.coral_files.append(file_path)
+
+            logger.info(f"Loaded {len(self.coral_files)} coral aggregator files from {coral_data_path}")
+
+        # Always use CPU in dataset - PyTorch Lightning handles GPU transfer
+        # This avoids CUDA reinitialization issues with num_workers > 0
+        self.device = torch.device("cpu")
+
+    def __len__(self) -> int:
         """Return the number of samples in the dataset."""
         return self.num_samples
 
-    def __getitem__(self, idx):
+    def sample_coral(self) -> Dict[str, Any]:
+        """Sample a coral (real) aggregator data sample randomly.
+
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - coral_x_total: Input features tensor (seq_length, features)
+            - coral_mean: Mean Zernike coefficients
+            - coral_filter: Filter name
+            - coral_raftbay: Raft bay sensor name
+        """
+        # Check if coral files are available
+        if not self.coral_files or len(self.coral_files) == 0:
+            raise RuntimeError("No coral aggregator files available for sampling.")
+
+        # Randomly sample from coral files with retry for corrupted files
+        max_retries = 10
+        corrupted_files = []
+
+        for attempt in range(max_retries):
+            try:
+                # Re-check availability in case files were deleted
+                if not self.coral_files:
+                    raise RuntimeError("All coral aggregator files have been removed due to corruption.")
+
+                idx = np.random.randint(0, len(self.coral_files))
+                coral_file = self.coral_files[idx]
+
+                # Skip already identified corrupted files
+                if coral_file in corrupted_files:
+                    continue
+
+                # Load the coral data from npz
+                npz_data = np.load(coral_file, allow_pickle=True)
+
+                # Reconstruct dictionary - split stacked arrays back into lists
+                loaded_data = {
+                    "estimated_zk": [torch.from_numpy(arr) for arr in npz_data["estimated_zk"]],
+                    "zk_mean": torch.from_numpy(npz_data["zk_mean"]),
+                    "field_x": [torch.from_numpy(arr) for arr in npz_data["field_x"]],
+                    "field_y": [torch.from_numpy(arr) for arr in npz_data["field_y"]],
+                    "snr": npz_data["snr"].tolist(),
+                    "header": json.loads(str(npz_data["header_json"])),
+                }
+                break  # Successfully loaded, exit retry loop
+            except (pickle.UnpicklingError, EOFError, IOError, OSError) as e:
+                # File is corrupted, truncated, or missing - delete it
+                logger.warning(f"Corrupted coral file detected: {coral_file}. Error: {e}. Deleting...")
+                try:
+                    if os.path.exists(coral_file):
+                        os.remove(coral_file)
+                        logger.info(f"Deleted corrupted file: {coral_file}")
+                except (OSError, PermissionError) as delete_error:
+                    logger.warning(f"Failed to delete {coral_file}: {delete_error}")
+
+                # Remove from list to avoid trying again
+                if coral_file in self.coral_files:
+                    self.coral_files.remove(coral_file)
+                corrupted_files.append(coral_file)
+
+                if attempt == max_retries - 1:
+                    # Last attempt failed, raise the error
+                    raise RuntimeError(
+                        f"Failed to load coral file after {max_retries} attempts. "
+                        f"Last error: {e}. All coral files may be corrupted."
+                    )
+                # Try another random file
+                continue
+
+        # Process coral data similar to __getitem__
+        x = torch.stack(loaded_data["estimated_zk"]).to(self.device) / 1000
+        mean = loaded_data["zk_mean"].to(self.device)
+
+        # Track the field x/y in degrees
+        field_x = torch.stack(loaded_data["field_x"])
+        field_y = torch.stack(loaded_data["field_y"])
+
+        # Load the SNR values + normalize
+        snr = (
+            torch.tensor(loaded_data["snr"]).to(self.device)[..., None]
+            / torch.tensor(loaded_data["snr"]).max()
+        )
+
+        # Combine the field x/y
+        position = torch.concatenate([field_x, field_y], dim=-1).to(self.device)
+
+        # Combine all into one array as an embedding
+        x = x.squeeze(1)  # [seq_length, features]
+        position = position.squeeze(1)  # [seq_length, 2]
+        x_total = torch.cat([x, position, snr], dim=1)
+
+        # Control padding the sequence
+        idx_tensor = torch.randperm(x_total.size(0))
+        x_total = x_total[idx_tensor]
+
+        if x_total.shape[0] > self.max_seq_length:
+            x_total = x_total[: self.max_seq_length, :]
+        else:
+            padding = torch.zeros((self.max_seq_length - x_total.shape[0], x_total.shape[1])).to(self.device)
+            x_total = torch.cat([x_total, padding], dim=0).to(self.device).float()
+
+        # Extract filter and raftbay info
+        filter_name = loaded_data["header"].get("FILTER", "unknown")
+        if isinstance(filter_name, str):
+            filter_name = filter_name.split("_")[0]
+
+        raftbay = loaded_data["header"].get("RAFTBAY", "UNKNOWN") + "_SW0"
+
+        coral_output = {
+            "coral_x_total": x_total,
+            "coral_mean": mean[None, ...],
+            "coral_filter": filter_name,
+            "coral_raftbay": raftbay,
+        }
+
+        return coral_output
+
+    def __getitem__(self, idx: int) -> Union[
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, str, str],
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, str, str, torch.Tensor, torch.Tensor, str, str],
+    ]:
         """Retrieve and process a single sample from the dataset at the specified index.
 
         This method loads a data sample from the file at the given index,
@@ -691,6 +931,8 @@ class zernikeDataset(Dataset):
               Zernike coefficient.
             - y (torch.Tensor) : A tensor of true Zernike
               coefficients (ground truth), shaped as `(N,)`.
+            - filter_name (str) : Filter name extracted from header.
+            - raftbay (str) : Raft bay sensor name from header.
 
         Notes
         -----
@@ -702,13 +944,26 @@ class zernikeDataset(Dataset):
           otherwise, it is padded with zeros
           to match the specified sequence length.
         """
-        # Load dictionary from file
+        # Load dictionary from npz file
         try:
-            with open(self.filename[idx], "rb") as file:
-                loaded_data = pickle.load(file)
-        except Exception:
-            print(file)
-            print("error")
+            npz_data = np.load(self.filename[idx], allow_pickle=True)
+
+            # Reconstruct dictionary - split stacked arrays back into lists
+            loaded_data = {
+                "estimated_zk": [torch.from_numpy(arr) for arr in npz_data["estimated_zk"]],
+                "zk_mean": torch.from_numpy(npz_data["zk_mean"]),
+                "field_x": [torch.from_numpy(arr) for arr in npz_data["field_x"]],
+                "field_y": [torch.from_numpy(arr) for arr in npz_data["field_y"]],
+                "snr": npz_data["snr"].tolist(),
+                "header": json.loads(str(npz_data["header_json"])),
+            }
+            # Add conditional fields if they exist
+            if "zk_true" in npz_data:
+                loaded_data["zk_true"] = torch.from_numpy(npz_data["zk_true"])
+        except (IOError, OSError, RuntimeError, KeyError) as e:
+            logger.error(
+                f"Error loading file {self.filename[idx] if idx < len(self.filename) else 'unknown'}: {e}"
+            )
             raise
         # convert zernikes microns
         x = torch.stack(loaded_data["estimated_zk"]).to(self.device) / 1000
@@ -724,25 +979,62 @@ class zernikeDataset(Dataset):
             / torch.tensor(loaded_data["snr"]).max()
         )
         # combine the field x/y
-        position = torch.concatenate([field_x, field_y], axis=-1).to(self.device)
+        position = torch.concatenate([field_x, field_y], dim=-1).to(self.device)
         # combine all into one array as an embedding
         # Remove singleton dimension for correct concatenation
-        x = x.squeeze(1)           # [seq_length, 25]
+        x = x.squeeze(1)  # [seq_length, 25]
         position = position.squeeze(1)  # [seq_length, 2]
         x_total = torch.cat([x, position, snr], dim=1)
         # control padding the sequence
-        idx = torch.randperm(x_total.size(0))
-        x_total = x_total[idx]
+        idx_tensor = torch.randperm(x_total.size(0))
+        x_total = x_total[idx_tensor]
         if x_total.shape[0] > self.max_seq_length:
             x_total = x_total[: self.max_seq_length, :]
         else:
-            padding = torch.zeros(
-                (self.max_seq_length - x_total.shape[0], x_total.shape[1])
-            ).to(self.device)
-            x_total = torch.cat([x_total, padding], axis=0).to(self.device).float()
+            padding = torch.zeros((self.max_seq_length - x_total.shape[0], x_total.shape[1])).to(self.device)
+            x_total = torch.cat([x_total, padding], dim=0).to(self.device).float()
         y = loaded_data["zk_true"]
+
+        # Prepare output dictionary
+        output = {
+            "x_total": x_total,
+            "mean": mean[None, ...],
+            "y": y,
+            "filter": loaded_data["header"]["FILTER"].split("_")[0],
+            "raftbay": loaded_data["header"]["RAFTBAY"] + "_SW0",
+        }
+
+        # Sample coral data if coral_mode is enabled
+        if self.coral_mode:
+            try:
+                coral_output = self.sample_coral()
+                output.update(coral_output)
+            except RuntimeError as e:
+                logger.warning(f"Failed to sample coral data: {e}")
+                # Continue without coral data
+
         # return the stack of embedings, mean zernike estimate and the true zernike in PSF
-        return x_total, mean[None, ...], y
+        # Return as tuple for backward compatibility
+        if self.coral_mode and "coral_x_total" in output:
+            return (
+                output["x_total"],
+                output["mean"],
+                output["y"],
+                output["filter"],
+                output["raftbay"],
+                output["coral_x_total"],
+                output["coral_mean"],
+                output["coral_filter"],
+                output["coral_raftbay"],
+            )
+        else:
+            return (
+                output["x_total"],
+                output["mean"],
+                output["y"],
+                output["filter"],
+                output["raftbay"],
+            )
 
 
 # Collate function for padding sequences
@@ -759,18 +1051,29 @@ def zk_collate_fn(batch):
             the sample, shaped as `(1, features)`.
         - y (torch.Tensor) : True Zernike coefficients (target values)
             for the sample, shaped as `(1, features)`.
+        - filter (str) : Filter name.
+        - raftbay (str) : Raft bay sensor name.
+        And optionally (if coral_mode=True):
+        - coral_x_total (torch.Tensor) : Coral input features.
+        - coral_mean (torch.Tensor) : Coral mean Zernike coefficients.
+        - coral_filter (str) : Coral filter name.
+        - coral_raftbay (str) : Coral raft bay sensor name.
 
     Returns
     -------
     tuple
         A tuple containing:
-        - (x_total, x_mean_total) :
+        - (x_total, x_mean_total, filter_total, chipid_total,
+           [coral_x_total, coral_x_mean_total, coral_filter_total, coral_chipid_total]) :
             - x_total (torch.Tensor) : A tensor of input features
                 for the entire batch, shaped
               as `(batch_size, seq_length, features)`.
             - x_mean_total (torch.Tensor) : A tensor of mean
                 Zernike coefficients for the entire batch,
               shaped as `(batch_size, features)`.
+            - filter_total (list) : List of filter names.
+            - chipid_total (list) : List of raft bay sensor names.
+            - [coral_*_total] : Optional coral data if available.
         - y_total (torch.Tensor) :
             - y_total (torch.Tensor) : A tensor of true Zernike
                 coefficients (targets) for the entire batch,
@@ -780,14 +1083,67 @@ def zk_collate_fn(batch):
     -----
     - The resulting tensors (`x_total`, `x_mean_total`, and `y_total`)
         are returned in a format suitable for training a model.
+    - If coral_mode is enabled, coral data tensors are also included.
     """
-    x_batch, x_mean_batch, y_batch = zip(*batch)
+    # Check if batch contains coral data (9 elements) or not (5 elements)
+    has_coral = len(batch[0]) == 9
+
+    if has_coral:
+        (
+            x_batch,
+            x_mean_batch,
+            y_batch,
+            filter_batch,
+            chipid_batch,
+            coral_x_batch,
+            coral_mean_batch,
+            coral_filter_batch,
+            coral_chipid_batch,
+        ) = zip(*batch)
+    else:
+        x_batch, x_mean_batch, y_batch, filter_batch, chipid_batch = zip(*batch)
+
     x_total = torch.zeros((len(x_batch), x_batch[0].shape[0], x_batch[0].shape[1]))
     y_total = torch.zeros((len(y_batch), y_batch[0].shape[1]))
     x_mean_total = torch.zeros((len(x_mean_batch), x_mean_batch[0].shape[-1]))
+
     # match the parallel arrays together to get the values
-    for i, (x, x_mean, y) in enumerate(zip(x_batch, x_mean_batch, y_batch)):
+    filter_total = []
+    chipid_total = []
+
+    for i, (x, x_mean, y, f, s) in enumerate(zip(x_batch, x_mean_batch, y_batch, filter_batch, chipid_batch)):
         x_total[i, :, :] = x
         y_total[i, :] = y[0, :]
         x_mean_total[i, :] = x_mean[0, 0, :]  # <-- fix here
-    return (x_total, x_mean_total), y_total
+        filter_total.append(f)
+        chipid_total.append(s)
+
+    # Process coral data if available
+    if has_coral:
+        coral_x_total = torch.zeros(
+            (len(coral_x_batch), coral_x_batch[0].shape[0], coral_x_batch[0].shape[1])
+        )
+        coral_x_mean_total = torch.zeros((len(coral_mean_batch), coral_mean_batch[0].shape[-1]))
+        coral_filter_total = []
+        coral_chipid_total = []
+
+        for i, (cx, cm, cf, cs) in enumerate(
+            zip(coral_x_batch, coral_mean_batch, coral_filter_batch, coral_chipid_batch)
+        ):
+            coral_x_total[i, :, :] = cx
+            coral_x_mean_total[i, :] = cm[0, 0, :]
+            coral_filter_total.append(cf)
+            coral_chipid_total.append(cs)
+
+        return (
+            x_total,
+            x_mean_total,
+            filter_total,
+            chipid_total,
+            coral_x_total,
+            coral_x_mean_total,
+            coral_filter_total,
+            coral_chipid_total,
+        ), y_total
+    else:
+        return (x_total, x_mean_total, filter_total, chipid_total), y_total

@@ -1,9 +1,10 @@
 """Neural network to predict donut placement coefficients from donut images and positions."""
 
+# Third-party imports
+import timm
 import torch
 from torch import nn
 from torchvision import models as cnn_models
-import timm
 
 
 class AlignNet(nn.Module):
@@ -43,8 +44,8 @@ class AlignNet(nn.Module):
         cnn_model: str = "mobilenetv4_conv_small",
         freeze_cnn: bool = False,
         n_predictor_layers: tuple = (256,),
-        device='cuda',
-        pretrained: bool = True
+        device="cuda",
+        pretrained: bool = True,
     ) -> None:
         """Initialize the NeuralAlignment model.
 
@@ -103,7 +104,7 @@ class AlignNet(nn.Module):
                 nn.Linear(n_features, n_predictor_layers[0]),
                 nn.BatchNorm1d(n_predictor_layers[0]),
                 nn.ReLU(),
-                nn.Dropout(p=0.2)
+                nn.Dropout(p=0.2),
             ]
 
             # add any additional layers
@@ -138,11 +139,15 @@ class AlignNet(nn.Module):
         # Check if it's a timm model (MobileNetV4, etc.)
         if cnn_model.startswith("mobilenetv4") or cnn_model in timm.list_models():
             # Load from timm
-            self.cnn = timm.create_model(
-                cnn_model,
-                pretrained=pretrained,
-                num_classes=0  # This removes the classifier and returns pooled features
-            ).to(self.device_val).float()  # Explicitly convert to float32
+            self.cnn = (
+                timm.create_model(
+                    cnn_model,
+                    pretrained=pretrained,
+                    num_classes=0,  # This removes the classifier and returns pooled features
+                )
+                .to(self.device_val)
+                .float()
+            )  # Explicitly convert to float32
             self.is_timm_model = True
 
             # Get actual feature dimension by doing a dummy forward pass
@@ -160,7 +165,10 @@ class AlignNet(nn.Module):
         else:
             # Load from torchvision
             weights_param = "DEFAULT" if pretrained else None
-            self.cnn = getattr(cnn_models, cnn_model)(weights=weights_param).to(self.device_val).float()  # Explicitly convert to float32
+            if not hasattr(cnn_models, cnn_model):
+                raise ValueError(f"Unknown torchvision model: {cnn_model}")
+            model_fn = getattr(cnn_models, cnn_model)
+            self.cnn = model_fn(weights=weights_param).to(self.device_val).float()
             # Get feature dimension
             self.n_cnn_features = self.cnn.fc.in_features
             self.is_timm_model = False
@@ -172,8 +180,8 @@ class AlignNet(nn.Module):
             pass
         else:
             # For torchvision models, remove the final fully connected layer
-            if hasattr(self.cnn, 'fc'):
-                self.cnn.fc = nn.Identity()
+            # torchvision models always have fc layer
+            self.cnn.fc = nn.Identity()
 
     def _reshape_image(self, image: torch.Tensor) -> torch.Tensor:
         """Expand a single-channel image tensor to have three identical channels.
@@ -204,15 +212,12 @@ class AlignNet(nn.Module):
         image = image[..., None, :, :]
 
         # Get the number of input channels required by the CNN
-        if hasattr(self.cnn, 'conv1'):
-            # torchvision models (ResNet, etc.)
-            n_channels = self.cnn.conv1.in_channels
-        elif hasattr(self.cnn, 'conv_stem'):
+        if self.is_timm_model:
             # timm models (MobileNet, etc.)
             n_channels = self.cnn.conv_stem.in_channels
         else:
-            # Default to 3 channels if we can't determine
-            n_channels = 3
+            # torchvision models (ResNet, etc.)
+            n_channels = self.cnn.conv1.in_channels
 
         # duplicate image for each channel
         image = image.repeat_interleave(n_channels, dim=-3)

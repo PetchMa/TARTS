@@ -4,14 +4,35 @@ This module implements a WaveNet system with DARE-GRAM loss for unsupervised dom
 The method aligns inverse Gram matrices between source and target domains without requiring target labels.
 """
 
-from typing import Tuple
+# Standard library imports
+import logging
+from typing import Any, Dict, Tuple
+
+# Third-party imports
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+# Local/application imports
+from .constants import (
+    BAND_MEAN,
+    BAND_STD,
+    BAND_VALUES_TENSOR,
+    CAMERA_TYPE,
+    DEFAULT_INPUT_SHAPE,
+    DEG_TO_RAD,
+    FIELD_MEAN,
+    FIELD_STD,
+    INTRA_MEAN,
+    INTRA_STD,
+    ZERNIKE_SCALE_FACTOR,
+)
 from .utils import convert_zernikes_deploy
 from .wavenet import WaveNet
+
+logger = logging.getLogger(__name__)
 
 
 class WaveNetSystem_Coral(pl.LightningModule):
@@ -30,7 +51,8 @@ class WaveNetSystem_Coral(pl.LightningModule):
         alpha: float = 0,
         lr: float = 1e-3,
         lr_schedule: bool = False,
-        device: str = 'cuda',
+        weight_decay: float = 1e-4,
+        device: str = "cuda",
         pretrained: bool = False,
         tradeoff_angle: float = 0.05,
         tradeoff_scale: float = 0.001,
@@ -52,9 +74,11 @@ class WaveNetSystem_Coral(pl.LightningModule):
         alpha: float, default=0
             Weight for the L2 penalty.
         lr: float, default=1e-3
-            The initial learning rate for Adam.
+            The initial learning rate for AdamW.
         lr_schedule: bool, default=False
             Whether to use the ReduceLROnPlateau learning rate scheduler.
+        weight_decay: float, default=1e-4
+            The weight decay (L2 penalty) coefficient for the AdamW optimizer.
         device: str, default='cuda'
             The device to use for computation ('cuda' or 'cpu').
         pretrained: bool, default=False
@@ -80,9 +104,9 @@ class WaveNetSystem_Coral(pl.LightningModule):
             pretrained=pretrained,
         )
 
-        self.camType = "LsstCam"
-        self.inputShape = (160, 160)
-        self.val_mRSSE = None
+        self.camType = CAMERA_TYPE
+        self.inputShape = DEFAULT_INPUT_SHAPE
+        self.val_mRSSE: torch.Tensor | None = None
 
     def dare_gram_loss(self, features_source: torch.Tensor, features_target: torch.Tensor) -> torch.Tensor:
         """Compute DARE-GRAM loss between source and target features.
@@ -143,9 +167,9 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
         index_A = torch.argwhere(eigen_A <= T_A)
         if len(index_A) > 0:
-            index_A = index_A[-1][0]
+            index_A_val = int(index_A[-1][0].item())
         else:
-            index_A = 1
+            index_A_val = 1
 
         if eigen_B[1] > T:
             T_B = eigen_B[1]
@@ -154,11 +178,11 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
         index_B = torch.argwhere(eigen_B <= T_B)
         if len(index_B) > 0:
-            index_B = index_B[-1][0]
+            index_B_val = int(index_B[-1][0].item())
         else:
-            index_B = 1
+            index_B_val = 1
 
-        k = max(index_A, index_B)
+        k = max(index_A_val, index_B_val)
 
         # Ensure k is within valid range (avoid numerical issues)
         n_eigen = min(len(L_A), len(L_B))
@@ -179,9 +203,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
         # Compute cosine similarity for angle alignment
         cos_sim = nn.CosineSimilarity(dim=0, eps=1e-6)
         cos_distance = torch.dist(
-            torch.ones(n_features + 1).to(self.device_val),
-            cos_sim(A_pinv, B_pinv),
-            p=1
+            torch.ones(n_features + 1).to(self.device_val), cos_sim(A_pinv, B_pinv), p=1
         ) / (n_features + 1)
 
         # Compute scale alignment loss
@@ -199,9 +221,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
         return dare_gram_loss
 
-    def predict_step(
-        self, batch: dict, batch_idx: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def predict_step(self, batch: Dict[str, Any], batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and return with truth."""
         img = batch["image"]
         fx = batch["field_x"]
@@ -249,17 +269,26 @@ class WaveNetSystem_Coral(pl.LightningModule):
         f = -f + 1
         return f
 
-    def calc_losses(self, batch: dict, batch_idx: int, use_coral: bool = False) -> tuple:
+    def calc_losses(
+        self,
+        batch: Dict[str, Any],
+        batch_idx: int,
+        use_coral: bool = False,
+        add_dare_gram_to_loss: bool = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Predict Zernikes and calculate losses with optional DARE-GRAM.
 
         Parameters
         ----------
-        batch: dict
+        batch: Dict[str, Any]
             Batch of training data. If use_coral=True, should contain coral data.
         batch_idx: int
             Batch index.
         use_coral: bool, default=False
             Whether to compute DARE-GRAM loss with coral/target data.
+        add_dare_gram_to_loss: bool, default=True
+            Whether to add DARE-GRAM loss to the total loss. If False, DARE-GRAM is computed
+            for logging but not included in the total loss.
 
         Returns
         -------
@@ -310,19 +339,20 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
                 # Compute DARE-GRAM loss for logging
                 dare_gram_loss = self.dare_gram_loss(source_features, target_features)
-            except Exception as e:
-                print(f"⚠️  DARE-GRAM loss computation failed: {e}")
+            except (RuntimeError, ValueError, IndexError) as e:
+                logger.warning(f"DARE-GRAM loss computation failed: {e}")
                 dare_gram_loss = torch.tensor(0.0, device=self.device_val)
 
-        if self.val_mRSSE is not None:
-            scale_loss = self.exp_rise_flipped(self.val_mRSSE)
+        # Add DARE-GRAM to loss only if requested
+        if add_dare_gram_to_loss:
+            scale_loss = self.exp_rise_flipped(self.val_mRSSE if self.val_mRSSE is not None else mRSSE)
+            total_loss = regression_loss + self.hparams.dare_gram_weight * scale_loss * dare_gram_loss
         else:
-            scale_loss = self.exp_rise_flipped(mRSSE)
-        total_loss = regression_loss + self.hparams.dare_gram_weight * scale_loss * dare_gram_loss
+            total_loss = regression_loss
 
         return total_loss, mRSSE, dare_gram_loss
 
-    def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
+    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Execute training step on a batch."""
         loss, mRSSE, dare_gram_loss = self.calc_losses(batch, batch_idx, use_coral=True)
         self.log("train_loss", loss, sync_dist=True, prog_bar=True)
@@ -331,18 +361,24 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
         return loss
 
-    def validation_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Execute validation step on a batch."""
-        # Skip DARE-GRAM during validation for faster evaluation and focus on regression metrics
-        loss, mRSSE, dare_gram_loss = self.calc_losses(batch, batch_idx, use_coral=False)
+        # Compute DARE-GRAM for logging but don't add it to validation loss
+        # This allows monitoring domain adaptation without affecting validation metrics
+        loss, mRSSE, dare_gram_loss = self.calc_losses(
+            batch, batch_idx, use_coral=True, add_dare_gram_to_loss=False
+        )
         self.log("val_loss", loss, sync_dist=True, prog_bar=True)
         self.log("val_mRSSE", mRSSE, sync_dist=True)
-        self.val_mRSSE = mRSSE
+        self.log("val_dare_gram_loss", dare_gram_loss, sync_dist=True)
+        self.val_mRSSE = mRSSE.clone().detach()  # Store a copy to avoid tensor reference issues
         return loss
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
+    def configure_optimizers(self) -> Any:
         """Configure the optimizer."""
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=1e-4)
+        optimizer = torch.optim.AdamW(
+            self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay
+        )
 
         if self.hparams.lr_schedule:
             return {
@@ -358,16 +394,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
     def get_band_values(self, bands: torch.Tensor) -> torch.Tensor:
         """Retrieve band values for a batch of indices."""
-        band_values = torch.tensor([
-            [0.3671],
-            [0.4827],
-            [0.6223],
-            [0.7546],
-            [0.8691],
-            [0.9712]
-        ]).to(self.device_val)
-
-        return band_values[bands]
+        return BAND_VALUES_TENSOR.to(self.device_val)[bands]
 
     def rescale_image_batched(self, data):
         """Rescale batched image data with normalization."""
@@ -398,25 +425,19 @@ class WaveNetSystem_Coral(pl.LightningModule):
         """Predict zernikes for production."""
         img = self.rescale_image_batched(img)
 
-        fx *= torch.pi / 180
-        fy *= torch.pi / 180
+        fx *= DEG_TO_RAD
+        fy *= DEG_TO_RAD
 
-        field_mean = 0.000
-        field_std = 0.021
-        fx = (fx - field_mean) / field_std
-        fy = (fy - field_mean) / field_std
+        fx = (fx - FIELD_MEAN) / FIELD_STD
+        fy = (fy - FIELD_MEAN) / FIELD_STD
 
-        intra_mean = 0.5
-        intra_std = 0.5
-        focalFlag = (focalFlag - intra_mean) / intra_std
+        focalFlag = (focalFlag - INTRA_MEAN) / INTRA_STD
 
         band = self.get_band_values(band)[:, 0]
-        band_mean = 0.710
-        band_std = 0.174
-        band = (band - band_mean) / band_std
+        band = (band - BAND_MEAN) / BAND_STD
 
         zk_pred = self.wavenet(img, fx, fy, focalFlag, band)
 
-        zk_pred *= 1_000
+        zk_pred *= ZERNIKE_SCALE_FACTOR
 
         return zk_pred

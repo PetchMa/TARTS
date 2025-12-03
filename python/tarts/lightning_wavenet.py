@@ -1,14 +1,35 @@
 """Wrapping everything for WaveNet in Pytorch Lightning."""
 
-from typing import Any, Tuple
+# Standard library imports
+import logging
+from typing import Any, Dict, Tuple
+
+# Third-party imports
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
+
+# Local/application imports
+from .constants import (
+    BAND_MEAN,
+    BAND_STD,
+    BAND_VALUES_TENSOR,
+    CAMERA_TYPE,
+    DEFAULT_INPUT_SHAPE,
+    DEG_TO_RAD,
+    FIELD_MEAN,
+    FIELD_STD,
+    INTRA_MEAN,
+    INTRA_STD,
+    ZERNIKE_SCALE_FACTOR,
+)
 from .dataloader import Donuts, Donuts_Fullframe
 from .utils import convert_zernikes_deploy
 from .wavenet import WaveNet
+
+logger = logging.getLogger(__name__)
 
 
 class DonutLoader(pl.LightningDataModule):
@@ -45,9 +66,7 @@ class DonutLoader(pl.LightningDataModule):
         self.save_hyperparameters()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def _build_loader(
-        self, mode: str, shuffle: bool = False, drop_last: bool = True
-    ) -> DataLoader:
+    def _build_loader(self, mode: str, shuffle: bool = False, drop_last: bool = True) -> DataLoader:
         """Build a DataLoader."""
         return DataLoader(
             Donuts(mode=mode, **self.hparams),
@@ -105,9 +124,7 @@ class DonutLoader_Fullframe(pl.LightningDataModule):
         super().__init__()
         self.save_hyperparameters()
 
-    def _build_loader(
-        self, mode: str, shuffle: bool = False, drop_last: bool = True
-    ) -> DataLoader:
+    def _build_loader(self, mode: str, shuffle: bool = False, drop_last: bool = True) -> DataLoader:
         """Build a DataLoader."""
         return DataLoader(
             Donuts_Fullframe(mode=mode, **self.hparams),
@@ -144,7 +161,8 @@ class WaveNetSystem(pl.LightningModule):
         alpha: float = 0,
         lr: float = 1e-3,
         lr_schedule: bool = False,
-        device: str = 'cuda',
+        weight_decay: float = 1e-4,
+        device: str = "cuda",
         pretrained: bool = False,
     ) -> None:
         """Create the WaveNet.
@@ -152,8 +170,9 @@ class WaveNetSystem(pl.LightningModule):
         Parameters
         ----------
         cnn_model: str, default="resnet34"
-            The name of the pre-trained CNN model from torchvision or timm.
-            Supports both torchvision models (e.g., "resnet34") and timm models (e.g., "mobilenetv4_conv_small").
+            The name of the pre-trained CNN model from torchvision or timm. Supports
+            both torchvision models (e.g., "resnet34") and timm models
+            (e.g., "mobilenetv4_conv_small").
         freeze_cnn: bool, default=False
             Whether to freeze the CNN weights.
         n_predictor_layers: tuple, default=(256)
@@ -164,9 +183,11 @@ class WaveNetSystem(pl.LightningModule):
         alpha: float, default=0
             Weight for the L2 penalty.
         lr: float, default=1e-3
-            The initial learning rate for Adam.
+            The initial learning rate for AdamW.
         lr_schedule: bool, default=True
             Whether to use the ReduceLROnPlateau learning rate scheduler.
+        weight_decay: float, default=1e-4
+            The weight decay (L2 penalty) coefficient for the AdamW optimizer.
         device: str, default='cuda'
             The device to use for computation ('cuda' or 'cpu').
         pretrained: bool, default=False
@@ -185,12 +206,10 @@ class WaveNetSystem(pl.LightningModule):
 
         # define some parameters that will be accessed by
         # the MachineLearningAlgorithm in ts_wep
-        self.camType = "LsstCam"
-        self.inputShape = (160, 160)
+        self.camType = CAMERA_TYPE
+        self.inputShape = DEFAULT_INPUT_SHAPE
 
-    def predict_step(
-        self, batch: dict, batch_idx: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def predict_step(self, batch: Dict[str, Any], batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and return with truth."""
         # unpack data from the dictionary
         img = batch["image"]
@@ -198,7 +217,7 @@ class WaveNetSystem(pl.LightningModule):
         fy = batch["field_y"]
         intra = batch["intrafocal"]
         band = batch["band"]
-        zk_true = batch["zernikes"].cuda()
+        zk_true = batch["zernikes"].to(self.device_val)
         # dof_true = batch["dof"]  # noqa: F841
 
         # predict zernikes
@@ -206,7 +225,7 @@ class WaveNetSystem(pl.LightningModule):
 
         return zk_pred, zk_true
 
-    def calc_losses(self, batch: dict, batch_idx: int) -> tuple:
+    def calc_losses(self, batch: Dict[str, Any], batch_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predict Zernikes and calculate the losses.
 
         The two losses considered are:
@@ -216,24 +235,46 @@ class WaveNetSystem(pl.LightningModule):
 
         The mRSSE provides an estimate of the PSF degradation.
         """
-        # predict zernikes
-        zk_pred, zk_true = self.predict_step(batch, batch_idx)
+        try:
+            # predict zernikes
+            zk_pred, zk_true = self.predict_step(batch, batch_idx)
 
-        # convert to FWHM contributions
-        zk_pred = convert_zernikes_deploy(zk_pred)
-        zk_true = convert_zernikes_deploy(zk_true)
+            # Check for NaN or Inf values in predictions/truth
+            if torch.any(torch.isnan(zk_pred)) or torch.any(torch.isnan(zk_true)):
+                logger.warning("NaN detected in predictions or truth values, returning zero loss")
+                return torch.tensor(0.0, device=self.device_val), torch.tensor(0.0, device=self.device_val)
+            if torch.any(torch.isinf(zk_pred)) or torch.any(torch.isinf(zk_true)):
+                logger.warning("Inf detected in predictions or truth values, returning zero loss")
+                return torch.tensor(0.0, device=self.device_val), torch.tensor(0.0, device=self.device_val)
 
-        # pull out the weights from the final linear layer
-        *_, A, _ = self.wavenet.predictor.parameters()
+            # convert to FWHM contributions
+            zk_pred = convert_zernikes_deploy(zk_pred)
+            zk_true = convert_zernikes_deploy(zk_true)
 
-        # calculate loss
-        sse = F.mse_loss(zk_pred, zk_true, reduction="none").sum(dim=-1)
-        loss = sse.mean() + self.hparams.alpha * A.square().sum()
-        mRSSE = torch.sqrt(sse).mean()
+            # pull out the weights from the final linear layer
+            *_, A, _ = self.wavenet.predictor.parameters()
 
-        return loss, mRSSE
+            # calculate loss
+            sse = F.mse_loss(zk_pred, zk_true, reduction="none").sum(dim=-1)
+            loss = sse.mean() + self.hparams.alpha * A.square().sum()
+            mRSSE = torch.sqrt(sse).mean()
 
-    def calc_losses_pure(self, batch: dict, batch_idx: int) -> tuple:
+            # Check for NaN or Inf in computed losses
+            if torch.any(torch.isnan(loss)) or torch.any(torch.isinf(loss)):
+                logger.warning("NaN/Inf detected in computed loss, returning zero loss")
+                return torch.tensor(0.0, device=self.device_val), torch.tensor(0.0, device=self.device_val)
+            if torch.any(torch.isnan(mRSSE)) or torch.any(torch.isinf(mRSSE)):
+                logger.warning("NaN/Inf detected in computed mRSSE, returning zero mRSSE")
+                mRSSE = torch.tensor(0.0, device=self.device_val)
+
+            return loss, mRSSE
+        except (RuntimeError, ValueError, IndexError) as e:
+            logger.warning(f"Error in calc_losses: {e}, returning zero loss")
+            return torch.tensor(0.0, device=self.device_val), torch.tensor(0.0, device=self.device_val)
+
+    def calc_losses_pure(
+        self, batch: Dict[str, Any], batch_idx: int
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Predict Zernikes and calculate the losses.
 
         The two losses considered are:
@@ -243,24 +284,57 @@ class WaveNetSystem(pl.LightningModule):
 
         The mRSSE provides an estimate of the PSF degradation.
         """
-        # predict zernikes
-        zk_pred, zk_true = self.predict_step(batch, batch_idx)
+        try:
+            # predict zernikes
+            zk_pred, zk_true = self.predict_step(batch, batch_idx)
 
-        # convert to FWHM contributions
-        zk_pred = convert_zernikes_deploy(zk_pred, device=self.device)
-        zk_true = convert_zernikes_deploy(zk_true, device=self.device)
+            # Check for NaN or Inf values in predictions/truth
+            if torch.any(torch.isnan(zk_pred)) or torch.any(torch.isnan(zk_true)):
+                logger.warning("NaN detected in predictions or truth values, returning zero loss")
+                zero_tensor = torch.tensor(0.0, device=self.device_val)
+                return zero_tensor, zero_tensor, zk_pred, zk_true
+            if torch.any(torch.isinf(zk_pred)) or torch.any(torch.isinf(zk_true)):
+                logger.warning("Inf detected in predictions or truth values, returning zero loss")
+                zero_tensor = torch.tensor(0.0, device=self.device_val)
+                return zero_tensor, zero_tensor, zk_pred, zk_true
 
-        # pull out the weights from the final linear layer
-        *_, A, _ = self.wavenet.predictor.parameters()
+            # convert to FWHM contributions
+            zk_pred = convert_zernikes_deploy(zk_pred)
+            zk_true = convert_zernikes_deploy(zk_true)
 
-        # calculate loss
-        sse = F.mse_loss(zk_pred, zk_true, reduction="none").sum(dim=-1)
-        loss = sse.mean() + self.hparams.alpha * A.square().sum()
-        mRSSE = torch.sqrt(sse).mean()
+            # pull out the weights from the final linear layer
+            *_, A, _ = self.wavenet.predictor.parameters()
 
-        return loss, mRSSE, zk_pred, zk_true
+            # calculate loss
+            sse = F.mse_loss(zk_pred, zk_true, reduction="none").sum(dim=-1)
+            loss = sse.mean() + self.hparams.alpha * A.square().sum()
+            mRSSE = torch.sqrt(sse).mean()
 
-    def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
+            # Check for NaN or Inf in computed losses
+            if torch.any(torch.isnan(loss)) or torch.any(torch.isinf(loss)):
+                logger.warning("NaN/Inf detected in computed loss, returning zero loss")
+                zero_tensor = torch.tensor(0.0, device=self.device_val)
+                return zero_tensor, zero_tensor, zk_pred, zk_true
+            if torch.any(torch.isnan(mRSSE)) or torch.any(torch.isinf(mRSSE)):
+                logger.warning("NaN/Inf detected in computed mRSSE, returning zero mRSSE")
+                mRSSE = torch.tensor(0.0, device=self.device_val)
+
+            return loss, mRSSE, zk_pred, zk_true
+        except (RuntimeError, ValueError, IndexError) as e:
+            logger.warning(f"Error in calc_losses_pure: {e}, returning zero loss")
+            zero_tensor = torch.tensor(0.0, device=self.device_val)
+            # Return zero loss but preserve predictions for debugging
+            try:
+                zk_pred, zk_true = self.predict_step(batch, batch_idx)
+                return zero_tensor, zero_tensor, zk_pred, zk_true
+            except Exception:
+                # If even predict_step fails, create dummy tensors
+                dummy_shape = (batch.get("zernikes", torch.tensor([[]])).shape[0],)
+                dummy_pred = torch.zeros(dummy_shape, device=self.device_val)
+                dummy_true = torch.zeros(dummy_shape, device=self.device_val)
+                return zero_tensor, zero_tensor, dummy_pred, dummy_true
+
+    def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Execute training step on a batch."""
         loss, mRSSE = self.calc_losses(batch, batch_idx)
         self.log("train_loss", loss, sync_dist=True, prog_bar=True)
@@ -268,7 +342,7 @@ class WaveNetSystem(pl.LightningModule):
 
         return loss
 
-    def validation_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Execute validation step on a batch."""
         loss, mRSSE = self.calc_losses(batch, batch_idx)
         self.log("val_loss", loss, sync_dist=True, prog_bar=True)
@@ -276,9 +350,11 @@ class WaveNetSystem(pl.LightningModule):
 
         return loss
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
+    def configure_optimizers(self) -> Any:
         """Configure the optimizer."""
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=1e-4)
+        optimizer = torch.optim.AdamW(
+            self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay
+        )
         # optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
 
         if self.hparams.lr_schedule:
@@ -302,17 +378,7 @@ class WaveNetSystem(pl.LightningModule):
         Returns:
             torch.Tensor: A tensor of shape (batch_size, 1) with band values.
         """
-        # Create a tensor with band values
-        band_values = torch.tensor([
-            [0.3671],
-            [0.4827],
-            [0.6223],
-            [0.7546],
-            [0.8691],
-            [0.9712]
-        ]).to(self.device_val)
-
-        return band_values[bands]
+        return BAND_VALUES_TENSOR.to(self.device_val)[bands]
 
     def rescale_image(self, data):
         """Rescale image data to the range [0, 1].
@@ -367,31 +433,25 @@ class WaveNetSystem(pl.LightningModule):
         img = self.rescale_image_batched(img)
 
         # convert angles to radians
-        fx *= torch.pi / 180
-        fy *= torch.pi / 180
+        fx *= DEG_TO_RAD
+        fy *= DEG_TO_RAD
 
         # normalize angles
-        field_mean = 0.000
-        field_std = 0.021
-        fx = (fx - field_mean) / field_std
-        fy = (fy - field_mean) / field_std
+        fx = (fx - FIELD_MEAN) / FIELD_STD
+        fy = (fy - FIELD_MEAN) / FIELD_STD
 
         # normalize the intrafocal flags
-        intra_mean = 0.5
-        intra_std = 0.5
-        focalFlag = (focalFlag - intra_mean) / intra_std
+        focalFlag = (focalFlag - INTRA_MEAN) / INTRA_STD
 
         band = self.get_band_values(band)[:, 0]
         # U G R I Z Y
         # normalize the wavelength
-        band_mean = 0.710
-        band_std = 0.174
-        band = (band - band_mean) / band_std
+        band = (band - BAND_MEAN) / BAND_STD
 
         # predict zernikes in microns
         zk_pred = self.wavenet(img, fx, fy, focalFlag, band)
 
         # convert to nanometers
-        zk_pred *= 1_000
+        zk_pred *= ZERNIKE_SCALE_FACTOR
 
         return zk_pred

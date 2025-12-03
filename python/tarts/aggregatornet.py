@@ -4,12 +4,16 @@ This module implements a transformer-based neural network that aggregates
 predictions from multiple donut images to produce a single, improved estimate
 of Zernike coefficients for the LSST Active Optics System.
 """
+
+# Third-party imports
+import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-import pytorch_lightning as pl
 import torch.nn.functional as F_loss
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-# from typing import Tuple  # Unused import
+from typing import Any
+
+# Local/application imports
 from .utils import convert_zernikes_deploy
 
 
@@ -51,6 +55,7 @@ class AggregatorNet(pl.LightningModule):
         max_seq_length: int,
         lr=0.002507905395321983,
         num_zernikes=17,
+        zk_dof_zk=False,
     ):
         """Initialize the AggregatorNet model.
 
@@ -74,6 +79,8 @@ class AggregatorNet(pl.LightningModule):
         num_zernikes : int, optional
             The number of Zernike polynomial coefficients to
             predict (default is 19).
+        zk_dof_zk : bool, optional
+            Whether to use Zernike-DOF-Zernike conversion mode (default is False).
 
         Notes
         -----
@@ -81,19 +88,24 @@ class AggregatorNet(pl.LightningModule):
         - The model outputs a linear transformation of size `num_zernikes`.
 
         """
-        super(AggregatorNet, self).__init__()
+        super().__init__()
         self.save_hyperparameters()  # Save model hyperparameters
+
+        # Input projection layer: (num_zernikes + 3) -> d_model
+        # The +3 accounts for field_x, field_y, and snr features
+        input_dim = num_zernikes + 3
+        self.input_proj = nn.Linear(input_dim, d_model)
+
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
             batch_first=True,
         )
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_layers
-        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         # final layer to transform to the shape of number of zernikes
         self.fc = nn.Linear(d_model, num_zernikes)
+        self.zk_dof_zk = zk_dof_zk
 
     def forward(self, x: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
         """Forward pass of the AggregatorNet model.
@@ -103,7 +115,7 @@ class AggregatorNet(pl.LightningModule):
         x : tuple of (torch.Tensor, torch.Tensor)
             A tuple where:
             - x[0] (torch.Tensor): The input sequence tensor of shape
-                (batch_size, seq_length, d_model).
+                (batch_size, seq_length, num_zernikes + 3).
             - x[1] (torch.Tensor): The mean tensor used for output adjustment.
 
         Returns
@@ -113,14 +125,18 @@ class AggregatorNet(pl.LightningModule):
 
         Notes
         -----
-        - The transformer encoder processes the first element of the tuple.
+        - Input features are first projected from (num_zernikes + 3) to d_model dimensions.
+        - The transformer encoder processes the projected features.
         - The last token's output is extracted and passed through a linear
             layer.
         - The mean correction (second element) is added to the final output.
 
         """
         x_input, mean = x
-        x_tensor = self.transformer_encoder(x_input)
+        # Project input features to d_model dimensions
+        x_projected = self.input_proj(x_input)
+        # Pass through transformer
+        x_tensor = self.transformer_encoder(x_projected)
         x_tensor = x_tensor[:, -1, :]  # Take the last token's output
         x_tensor = self.fc(x_tensor)  # Predict the next token
         x_tensor += mean
@@ -155,7 +171,8 @@ class AggregatorNet(pl.LightningModule):
 
         """
         x, y = batch  # y is the target token
-        logits = self.forward(x)
+        x_input, x_mean, filter_name, chipid = x
+        logits = self.forward((x_input, x_mean))
         loss = self.loss_fn(logits, y)
         self.log("train_loss", loss, prog_bar=True)
         return loss
@@ -189,7 +206,8 @@ class AggregatorNet(pl.LightningModule):
 
         """
         x, y = batch  # y is the target token
-        logits = self.forward(x)
+        x_input, x_mean, filter_name, chipid = x
+        logits = self.forward((x_input, x_mean))
         loss = self.loss_fn(logits, y)
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_mRSSE", loss, prog_bar=True)  # mRSSE is the same as loss for this model
@@ -226,7 +244,7 @@ class AggregatorNet(pl.LightningModule):
         mRSSe = torch.sqrt(sse).mean()
         return mRSSe
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
+    def configure_optimizers(self) -> Any:
         """Configure the optimizer."""
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
 
