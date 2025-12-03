@@ -15,7 +15,6 @@ from typing import Any
 
 # Local/application imports
 from .utils import convert_zernikes_deploy
-from .utils import zernikes_to_dof_torch, dof_to_zernikes_torch
 
 
 class AggregatorNet(pl.LightningModule):
@@ -91,6 +90,12 @@ class AggregatorNet(pl.LightningModule):
         """
         super().__init__()
         self.save_hyperparameters()  # Save model hyperparameters
+
+        # Input projection layer: (num_zernikes + 3) -> d_model
+        # The +3 accounts for field_x, field_y, and snr features
+        input_dim = num_zernikes + 3
+        self.input_proj = nn.Linear(input_dim, d_model)
+
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -110,7 +115,7 @@ class AggregatorNet(pl.LightningModule):
         x : tuple of (torch.Tensor, torch.Tensor)
             A tuple where:
             - x[0] (torch.Tensor): The input sequence tensor of shape
-                (batch_size, seq_length, d_model).
+                (batch_size, seq_length, num_zernikes + 3).
             - x[1] (torch.Tensor): The mean tensor used for output adjustment.
 
         Returns
@@ -120,14 +125,18 @@ class AggregatorNet(pl.LightningModule):
 
         Notes
         -----
-        - The transformer encoder processes the first element of the tuple.
+        - Input features are first projected from (num_zernikes + 3) to d_model dimensions.
+        - The transformer encoder processes the projected features.
         - The last token's output is extracted and passed through a linear
             layer.
         - The mean correction (second element) is added to the final output.
 
         """
         x_input, mean = x
-        x_tensor = self.transformer_encoder(x_input)
+        # Project input features to d_model dimensions
+        x_projected = self.input_proj(x_input)
+        # Pass through transformer
+        x_tensor = self.transformer_encoder(x_projected)
         x_tensor = x_tensor[:, -1, :]  # Take the last token's output
         x_tensor = self.fc(x_tensor)  # Predict the next token
         x_tensor += mean
@@ -161,41 +170,11 @@ class AggregatorNet(pl.LightningModule):
         - The training loss is logged for monitoring.
 
         """
-        if not self.zk_dof_zk:
-            x, y = batch  # y is the target token
-            x_input, x_mean, filter_name, chipid = x
-            logits = self.forward((x_input, x_mean))
-            loss = self.loss_fn(logits, y)
-            self.log("train_loss", loss, prog_bar=True)
-        else:
-            x, y = batch  # y is the target token
-            x_input, x_mean, filter_name, chipid = x
-            logits = self.forward((x_input, x_mean))
-            new_logits = torch.zeros_like(logits)
-            for i in range(len(filter_name)):
-                filter_name_i = filter_name[i]
-                sensor_names = chipid[i]
-                print("old logits", logits[0, :])
-                x_dof = zernikes_to_dof_torch(
-                    filter_name=filter_name_i,
-                    measured_zk=logits[i][None, :],
-                    sensor_names=[sensor_names],
-                    rotation_angle=0.0,
-                    device=self.device,
-                    verbose=False,
-                )
-                new_logits[i, :] = dof_to_zernikes_torch(
-                    filter_name=filter_name_i,
-                    x_dof=x_dof,
-                    sensor_names=[sensor_names],
-                    rotation_angle=0.0,
-                    device=self.device,
-                    verbose=False,
-                )
-            print("new_logits", new_logits[0, :])
-
-            loss = self.loss_fn(new_logits, y)
-            self.log("train_loss", loss, prog_bar=True)
+        x, y = batch  # y is the target token
+        x_input, x_mean, filter_name, chipid = x
+        logits = self.forward((x_input, x_mean))
+        loss = self.loss_fn(logits, y)
+        self.log("train_loss", loss, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -226,40 +205,12 @@ class AggregatorNet(pl.LightningModule):
         - The validation loss is logged for monitoring.
 
         """
-        if not self.zk_dof_zk:
-            x, y = batch  # y is the target token
-            x_input, x_mean, filter_name, chipid = x
-            logits = self.forward((x_input, x_mean))
-            loss = self.loss_fn(logits, y)
-            self.log("val_loss", loss, prog_bar=True)
-            self.log("val_mRSSE", loss, prog_bar=True)  # mRSSE is the same as loss for this model
-        else:
-            x, y = batch  # y is the target token
-            x_input, x_mean, filter_name, chipid = x
-            logits = self.forward((x_input, x_mean))
-            new_logits = torch.zeros_like(logits)
-            for i in range(len(filter_name)):
-                filter_name_i = filter_name[i]
-                sensor_names = chipid[i]
-                x_dof = zernikes_to_dof_torch(
-                    filter_name=filter_name_i,
-                    measured_zk=logits[i][None, :],
-                    sensor_names=[sensor_names],
-                    rotation_angle=0.0,
-                    device=self.device,
-                    verbose=False,
-                )
-                new_logits[i, :] = dof_to_zernikes_torch(
-                    filter_name=filter_name_i,
-                    x_dof=x_dof,
-                    sensor_names=[sensor_names],
-                    rotation_angle=0.0,
-                    device=self.device,
-                    verbose=False,
-                )
-            loss = self.loss_fn(new_logits, y)
-            self.log("val_loss", loss, prog_bar=True)
-            self.log("val_mRSSE", loss, prog_bar=True)  # mRSSE is the same as loss for this model
+        x, y = batch  # y is the target token
+        x_input, x_mean, filter_name, chipid = x
+        logits = self.forward((x_input, x_mean))
+        loss = self.loss_fn(logits, y)
+        self.log("val_loss", loss, prog_bar=True)
+        self.log("val_mRSSE", loss, prog_bar=True)  # mRSSE is the same as loss for this model
         return loss
 
     def loss_fn(self, x, y):

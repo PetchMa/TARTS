@@ -1,4 +1,5 @@
 version: 0
+seed: 42  # Random seed for reproducibility across all training scripts
 adjustment_WaveNet: 10
 adjustment_AlignNet: 120
 refinements: 1
@@ -25,13 +26,16 @@ aggregator_val_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/a
 fullframe_train_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_plane_ml_opsim_0925/train/'
 fullframe_val_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_plane_ml_opsim_0925/val/'
 fullframe_test_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_plane_ml_opsim_0925/test/'
+aggregator_real_filepath: "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator_real"
+aggregator_real_train_filepath: "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator_real/train"
+aggregator_real_val_filepath: "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator_real/val"
 
 # AggregatorNet model parameters
 aggregator_model:
-  d_model: 28
-  nhead: 2
+  d_model: 128
+  nhead: 4
   num_layers: 6
-  dim_feedforward: 128
+  dim_feedforward: 512
 
 noll_zk:
 - 4

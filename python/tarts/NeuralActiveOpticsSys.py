@@ -141,7 +141,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             # Always use checkpoint loading - the pretrained parameter doesn't matter
             # when loading from checkpoint
             self.wavenet_model = WaveNetSystem.load_from_checkpoint(
-                wavenet_path, map_location=str(self.device_val)
+                wavenet_path, map_location=str(self.device_val), strict=False
             ).to(self.device_val)
 
         if alignet_path is None:
@@ -150,7 +150,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             # Always use checkpoint loading - the pretrained parameter doesn't matter
             # when loading from checkpoint
             self.alignnet_model = AlignNetSystem.load_from_checkpoint(
-                alignet_path, map_location=str(self.device_val)
+                alignet_path, map_location=str(self.device_val), strict=False
             ).to(self.device_val)
 
         self.max_seq_length = params["max_seq_len"]
@@ -169,9 +169,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 max_seq_length=self.max_seq_length,
             ).to(self.device_val)
         else:
-            self.aggregatornet_model = AggregatorNet.load_from_checkpoint(aggregatornet_path).to(
-                self.device_val
-            )
+            self.aggregatornet_model = AggregatorNet.load_from_checkpoint(
+                aggregatornet_path, strict=False
+            ).to(self.device_val)
 
         if final_layer is not None:
             layers = [

@@ -5,7 +5,8 @@ import glob
 import logging
 import os
 import pickle
-from typing import Any, Dict, List, Optional, Tuple
+import json
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 # Third-party imports
 import numpy as np
@@ -671,6 +672,10 @@ class zernikeDataset(Dataset):
     return_true : bool, optional, default=False
         Whether to return the true Zernike coefficients (`True`)
         or the estimated coefficients (`False`).
+    coral_mode : bool, optional, default=False
+        Whether to enable coral mode for sampling real data alongside simulations.
+    coral_filepath : str, optional, default='.../LSST_FULL_FRAME/aggregator_real/'
+        Path to the directory containing real/coral aggregator data files.
 
     Attributes
     ----------
@@ -707,6 +712,8 @@ class zernikeDataset(Dataset):
         data_dir="/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator/",
         alpha=1e-3,
         return_true=False,
+        coral_mode=False,
+        coral_filepath="/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator_real/",
     ):
         """Initialize the zernikeDataset.
 
@@ -722,8 +729,15 @@ class zernikeDataset(Dataset):
             Parameter used for adjusting Zernike coefficients during processing.
         return_true : bool, optional, default=False
             Whether to return the true Zernike coefficients or estimated coefficients.
+        coral_mode : bool, optional, default=False
+            Whether to enable coral mode for real data sampling.
+        coral_filepath : str, optional
+            Path to the real/coral aggregator dataset directory.
         """
         self.max_seq_length = seq_length
+        self.coral_mode = coral_mode
+        self.coral_filepath = coral_filepath
+
         # Loop through all files and subdirectories
         if train:
             self.image_dir = data_dir + "/train"
@@ -744,13 +758,153 @@ class zernikeDataset(Dataset):
         self.num_samples = len(self.filename)
         self.alpha = alpha
         self.return_true = return_true
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Load coral files if coral_mode is enabled
+        if self.coral_mode:
+            self.coral_files = []
+            coral_data_path = coral_filepath
+            if train:
+                coral_data_path += "/train"
+            else:
+                coral_data_path += "/val"
+
+            for root, _, files in os.walk(coral_data_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    self.coral_files.append(file_path)
+
+            logger.info(f"Loaded {len(self.coral_files)} coral aggregator files from {coral_data_path}")
+
+        # Always use CPU in dataset - PyTorch Lightning handles GPU transfer
+        # This avoids CUDA reinitialization issues with num_workers > 0
+        self.device = torch.device("cpu")
 
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""
         return self.num_samples
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, str, str]:
+    def sample_coral(self) -> Dict[str, Any]:
+        """Sample a coral (real) aggregator data sample randomly.
+
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - coral_x_total: Input features tensor (seq_length, features)
+            - coral_mean: Mean Zernike coefficients
+            - coral_filter: Filter name
+            - coral_raftbay: Raft bay sensor name
+        """
+        # Check if coral files are available
+        if not self.coral_files or len(self.coral_files) == 0:
+            raise RuntimeError("No coral aggregator files available for sampling.")
+
+        # Randomly sample from coral files with retry for corrupted files
+        max_retries = 10
+        corrupted_files = []
+
+        for attempt in range(max_retries):
+            try:
+                # Re-check availability in case files were deleted
+                if not self.coral_files:
+                    raise RuntimeError("All coral aggregator files have been removed due to corruption.")
+
+                idx = np.random.randint(0, len(self.coral_files))
+                coral_file = self.coral_files[idx]
+
+                # Skip already identified corrupted files
+                if coral_file in corrupted_files:
+                    continue
+
+                # Load the coral data from npz
+                npz_data = np.load(coral_file, allow_pickle=True)
+
+                # Reconstruct dictionary - split stacked arrays back into lists
+                loaded_data = {
+                    "estimated_zk": [torch.from_numpy(arr) for arr in npz_data["estimated_zk"]],
+                    "zk_mean": torch.from_numpy(npz_data["zk_mean"]),
+                    "field_x": [torch.from_numpy(arr) for arr in npz_data["field_x"]],
+                    "field_y": [torch.from_numpy(arr) for arr in npz_data["field_y"]],
+                    "snr": npz_data["snr"].tolist(),
+                    "header": json.loads(str(npz_data["header_json"])),
+                }
+                break  # Successfully loaded, exit retry loop
+            except (pickle.UnpicklingError, EOFError, IOError, OSError) as e:
+                # File is corrupted, truncated, or missing - delete it
+                logger.warning(f"Corrupted coral file detected: {coral_file}. Error: {e}. Deleting...")
+                try:
+                    if os.path.exists(coral_file):
+                        os.remove(coral_file)
+                        logger.info(f"Deleted corrupted file: {coral_file}")
+                except (OSError, PermissionError) as delete_error:
+                    logger.warning(f"Failed to delete {coral_file}: {delete_error}")
+
+                # Remove from list to avoid trying again
+                if coral_file in self.coral_files:
+                    self.coral_files.remove(coral_file)
+                corrupted_files.append(coral_file)
+
+                if attempt == max_retries - 1:
+                    # Last attempt failed, raise the error
+                    raise RuntimeError(
+                        f"Failed to load coral file after {max_retries} attempts. "
+                        f"Last error: {e}. All coral files may be corrupted."
+                    )
+                # Try another random file
+                continue
+
+        # Process coral data similar to __getitem__
+        x = torch.stack(loaded_data["estimated_zk"]).to(self.device) / 1000
+        mean = loaded_data["zk_mean"].to(self.device)
+
+        # Track the field x/y in degrees
+        field_x = torch.stack(loaded_data["field_x"])
+        field_y = torch.stack(loaded_data["field_y"])
+
+        # Load the SNR values + normalize
+        snr = (
+            torch.tensor(loaded_data["snr"]).to(self.device)[..., None]
+            / torch.tensor(loaded_data["snr"]).max()
+        )
+
+        # Combine the field x/y
+        position = torch.concatenate([field_x, field_y], dim=-1).to(self.device)
+
+        # Combine all into one array as an embedding
+        x = x.squeeze(1)  # [seq_length, features]
+        position = position.squeeze(1)  # [seq_length, 2]
+        x_total = torch.cat([x, position, snr], dim=1)
+
+        # Control padding the sequence
+        idx_tensor = torch.randperm(x_total.size(0))
+        x_total = x_total[idx_tensor]
+
+        if x_total.shape[0] > self.max_seq_length:
+            x_total = x_total[: self.max_seq_length, :]
+        else:
+            padding = torch.zeros((self.max_seq_length - x_total.shape[0], x_total.shape[1])).to(self.device)
+            x_total = torch.cat([x_total, padding], dim=0).to(self.device).float()
+
+        # Extract filter and raftbay info
+        filter_name = loaded_data["header"].get("FILTER", "unknown")
+        if isinstance(filter_name, str):
+            filter_name = filter_name.split("_")[0]
+
+        raftbay = loaded_data["header"].get("RAFTBAY", "UNKNOWN") + "_SW0"
+
+        coral_output = {
+            "coral_x_total": x_total,
+            "coral_mean": mean[None, ...],
+            "coral_filter": filter_name,
+            "coral_raftbay": raftbay,
+        }
+
+        return coral_output
+
+    def __getitem__(self, idx: int) -> Union[
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, str, str],
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, str, str, torch.Tensor, torch.Tensor, str, str],
+    ]:
         """Retrieve and process a single sample from the dataset at the specified index.
 
         This method loads a data sample from the file at the given index,
@@ -790,11 +944,23 @@ class zernikeDataset(Dataset):
           otherwise, it is padded with zeros
           to match the specified sequence length.
         """
-        # Load dictionary from file
+        # Load dictionary from npz file
         try:
-            with open(self.filename[idx], "rb") as file:
-                loaded_data = pickle.load(file)
-        except (pickle.UnpicklingError, IOError, OSError) as e:
+            npz_data = np.load(self.filename[idx], allow_pickle=True)
+
+            # Reconstruct dictionary - split stacked arrays back into lists
+            loaded_data = {
+                "estimated_zk": [torch.from_numpy(arr) for arr in npz_data["estimated_zk"]],
+                "zk_mean": torch.from_numpy(npz_data["zk_mean"]),
+                "field_x": [torch.from_numpy(arr) for arr in npz_data["field_x"]],
+                "field_y": [torch.from_numpy(arr) for arr in npz_data["field_y"]],
+                "snr": npz_data["snr"].tolist(),
+                "header": json.loads(str(npz_data["header_json"])),
+            }
+            # Add conditional fields if they exist
+            if "zk_true" in npz_data:
+                loaded_data["zk_true"] = torch.from_numpy(npz_data["zk_true"])
+        except (IOError, OSError, RuntimeError, KeyError) as e:
             logger.error(
                 f"Error loading file {self.filename[idx] if idx < len(self.filename) else 'unknown'}: {e}"
             )
@@ -828,14 +994,47 @@ class zernikeDataset(Dataset):
             padding = torch.zeros((self.max_seq_length - x_total.shape[0], x_total.shape[1])).to(self.device)
             x_total = torch.cat([x_total, padding], dim=0).to(self.device).float()
         y = loaded_data["zk_true"]
+
+        # Prepare output dictionary
+        output = {
+            "x_total": x_total,
+            "mean": mean[None, ...],
+            "y": y,
+            "filter": loaded_data["header"]["FILTER"].split("_")[0],
+            "raftbay": loaded_data["header"]["RAFTBAY"] + "_SW0",
+        }
+
+        # Sample coral data if coral_mode is enabled
+        if self.coral_mode:
+            try:
+                coral_output = self.sample_coral()
+                output.update(coral_output)
+            except RuntimeError as e:
+                logger.warning(f"Failed to sample coral data: {e}")
+                # Continue without coral data
+
         # return the stack of embedings, mean zernike estimate and the true zernike in PSF
-        return (
-            x_total,
-            mean[None, ...],
-            y,
-            loaded_data["header"]["FILTER"].split("_")[0],
-            loaded_data["header"]["RAFTBAY"] + "_SW0",
-        )
+        # Return as tuple for backward compatibility
+        if self.coral_mode and "coral_x_total" in output:
+            return (
+                output["x_total"],
+                output["mean"],
+                output["y"],
+                output["filter"],
+                output["raftbay"],
+                output["coral_x_total"],
+                output["coral_mean"],
+                output["coral_filter"],
+                output["coral_raftbay"],
+            )
+        else:
+            return (
+                output["x_total"],
+                output["mean"],
+                output["y"],
+                output["filter"],
+                output["raftbay"],
+            )
 
 
 # Collate function for padding sequences
@@ -852,18 +1051,29 @@ def zk_collate_fn(batch):
             the sample, shaped as `(1, features)`.
         - y (torch.Tensor) : True Zernike coefficients (target values)
             for the sample, shaped as `(1, features)`.
+        - filter (str) : Filter name.
+        - raftbay (str) : Raft bay sensor name.
+        And optionally (if coral_mode=True):
+        - coral_x_total (torch.Tensor) : Coral input features.
+        - coral_mean (torch.Tensor) : Coral mean Zernike coefficients.
+        - coral_filter (str) : Coral filter name.
+        - coral_raftbay (str) : Coral raft bay sensor name.
 
     Returns
     -------
     tuple
         A tuple containing:
-        - (x_total, x_mean_total) :
+        - (x_total, x_mean_total, filter_total, chipid_total,
+           [coral_x_total, coral_x_mean_total, coral_filter_total, coral_chipid_total]) :
             - x_total (torch.Tensor) : A tensor of input features
                 for the entire batch, shaped
               as `(batch_size, seq_length, features)`.
             - x_mean_total (torch.Tensor) : A tensor of mean
                 Zernike coefficients for the entire batch,
               shaped as `(batch_size, features)`.
+            - filter_total (list) : List of filter names.
+            - chipid_total (list) : List of raft bay sensor names.
+            - [coral_*_total] : Optional coral data if available.
         - y_total (torch.Tensor) :
             - y_total (torch.Tensor) : A tensor of true Zernike
                 coefficients (targets) for the entire batch,
@@ -873,18 +1083,67 @@ def zk_collate_fn(batch):
     -----
     - The resulting tensors (`x_total`, `x_mean_total`, and `y_total`)
         are returned in a format suitable for training a model.
+    - If coral_mode is enabled, coral data tensors are also included.
     """
-    x_batch, x_mean_batch, y_batch, filter_batch, chipid_batch = zip(*batch)
+    # Check if batch contains coral data (9 elements) or not (5 elements)
+    has_coral = len(batch[0]) == 9
+
+    if has_coral:
+        (
+            x_batch,
+            x_mean_batch,
+            y_batch,
+            filter_batch,
+            chipid_batch,
+            coral_x_batch,
+            coral_mean_batch,
+            coral_filter_batch,
+            coral_chipid_batch,
+        ) = zip(*batch)
+    else:
+        x_batch, x_mean_batch, y_batch, filter_batch, chipid_batch = zip(*batch)
+
     x_total = torch.zeros((len(x_batch), x_batch[0].shape[0], x_batch[0].shape[1]))
     y_total = torch.zeros((len(y_batch), y_batch[0].shape[1]))
     x_mean_total = torch.zeros((len(x_mean_batch), x_mean_batch[0].shape[-1]))
+
     # match the parallel arrays together to get the values
     filter_total = []
     chipid_total = []
+
     for i, (x, x_mean, y, f, s) in enumerate(zip(x_batch, x_mean_batch, y_batch, filter_batch, chipid_batch)):
         x_total[i, :, :] = x
         y_total[i, :] = y[0, :]
         x_mean_total[i, :] = x_mean[0, 0, :]  # <-- fix here
         filter_total.append(f)
         chipid_total.append(s)
-    return (x_total, x_mean_total, filter_total, chipid_total), y_total
+
+    # Process coral data if available
+    if has_coral:
+        coral_x_total = torch.zeros(
+            (len(coral_x_batch), coral_x_batch[0].shape[0], coral_x_batch[0].shape[1])
+        )
+        coral_x_mean_total = torch.zeros((len(coral_mean_batch), coral_mean_batch[0].shape[-1]))
+        coral_filter_total = []
+        coral_chipid_total = []
+
+        for i, (cx, cm, cf, cs) in enumerate(
+            zip(coral_x_batch, coral_mean_batch, coral_filter_batch, coral_chipid_batch)
+        ):
+            coral_x_total[i, :, :] = cx
+            coral_x_mean_total[i, :] = cm[0, 0, :]
+            coral_filter_total.append(cf)
+            coral_chipid_total.append(cs)
+
+        return (
+            x_total,
+            x_mean_total,
+            filter_total,
+            chipid_total,
+            coral_x_total,
+            coral_x_mean_total,
+            coral_filter_total,
+            coral_chipid_total,
+        ), y_total
+    else:
+        return (x_total, x_mean_total, filter_total, chipid_total), y_total
