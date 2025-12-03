@@ -26,7 +26,7 @@ from .constants import (
     ZERNIKE_SCALE_FACTOR,
 )
 from .dataloader import Donuts, Donuts_Fullframe
-from .utils import convert_zernikes_deploy
+from .utils import convert_zernikes
 from .wavenet import WaveNet
 
 logger = logging.getLogger(__name__)

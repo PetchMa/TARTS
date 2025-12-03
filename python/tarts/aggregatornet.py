@@ -15,6 +15,7 @@ from typing import Any
 
 # Local/application imports
 from .utils import convert_zernikes_deploy
+from .utils import zernikes_to_dof_torch, dof_to_zernikes_torch
 
 
 class AggregatorNet(pl.LightningModule):
