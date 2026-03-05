@@ -16,7 +16,7 @@ from torch.utils.data import Dataset
 
 # Local/application imports
 from .constants import DEFAULT_NOLL_ZK, DEFAULT_TRAIN_FRACTION
-from .utils import shift_offcenter, transform_inputs, augment_data_torch, add_random_hot_pixel
+from .utils import shift_offcenter, transform_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -291,12 +291,10 @@ class Donuts_Fullframe(Dataset):
         coral_filepath: str = "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/coral/",
         coral_mode: bool = False,
         mask_mode: bool = False,
-        augment: bool = False,
-        augment_scale: float = 0.1,
-        augment_kmin: float = 0.1,
+        rotate: bool = False,
         **kwargs: Any,
     ) -> None:
-        """Load the simulated ImSim donuts and zernikes in a Pytorch Dataset.
+        r"""Load the simulated ImSim donuts and zernikes in a Pytorch Dataset.
 
         Parameters
         ----------
@@ -318,17 +316,22 @@ class Donuts_Fullframe(Dataset):
             Whether to enable coral mode for domain adaptation.
         mask_mode: bool, default=False
             Whether to use mask mode for zernike extraction.
-        augment: bool, default=False
-            Whether to apply frequency-based augmentation. Requires coral_mode=True.
-            When enabled, randomly augments 50% of samples by injecting high-frequency
-            structure from coral images into simulation images.
-        augment_scale: float, default=0.1
-            (Deprecated) Scaling factor parameter. The scale is now randomly sampled
-            uniformly between 0.1 and 1.0 for each augmentation. This parameter is
-            kept for backward compatibility but is not used.
-        augment_kmin: float, default=0.1
-            Minimum frequency magnitude to extract from coral images for augmentation.
+        rotate: bool, default=False
+            Whether to use rotated Zernike targets from the dataset when available.
+        train_fraction: float, optional
+            Fraction of data to use (0.0-1.0). Applies to train and val when set.
+            For train, if None, uses DEFAULT_TRAIN_FRACTION. For val, if None, uses full data.
+        rotation_direction: Optional[str], default=None
+            If rotate=True and rotation_direction is set to \"pos\" or \"neg\",
+            use `zk_true_camera_pos` or `zk_true_camera_neg` from the dataset.
+            If None, falls back to legacy `zk_true_camera` / `zk_true` behaviour.
         """
+        train_fraction = kwargs.pop("train_fraction", None)
+        rotation_direction = kwargs.pop("rotation_direction", None)
+        # Ignore deprecated augmentation params for backward compatibility
+        kwargs.pop("augment", None)
+        kwargs.pop("augment_scale", None)
+        kwargs.pop("augment_kmin", None)
         self.settings = {
             "mode": mode,
             "transform": transform,
@@ -348,14 +351,8 @@ class Donuts_Fullframe(Dataset):
         logger.debug(f"Image directory: {self.image_dir}")
         self.coral_filepath = coral_filepath
         self.coral_mode = coral_mode
-        self.augment = augment
-        self.augment_scale = augment_scale
-        self.augment_kmin = augment_kmin
-
-        # Augmentation requires coral_mode to be enabled
-        if self.augment and not self.coral_mode:
-            logger.warning("augment=True requires coral_mode=True. Disabling augmentation.")
-            self.augment = False
+        self.rotate = rotate
+        self.rotation_direction = rotation_direction
 
         if coral_mode:
             self.coral_image_files = []
@@ -371,14 +368,18 @@ class Donuts_Fullframe(Dataset):
                     self.coral_image_files.append(file_path)
 
         if self.settings["mode"] == "train":
-            # self.image_files = self.image_files[: int(0.1 * len(self.image_files))]
-
-            self.image_files = self.image_files[: int(DEFAULT_TRAIN_FRACTION * len(self.image_files))]
+            frac = train_fraction if train_fraction is not None else DEFAULT_TRAIN_FRACTION
+            n_use = max(1, int(frac * len(self.image_files)))
+            self.image_files = self.image_files[:n_use]
+        elif self.settings["mode"] == "val" and train_fraction is not None:
+            n_use = max(1, int(train_fraction * len(self.image_files)))
+            self.image_files = self.image_files[:n_use]
 
         if noll_zk is None:
             noll_zk = DEFAULT_NOLL_ZK
         self.noll_zk = np.array(noll_zk) - 4
         self.adjustment_factor = adjustment_factor
+        self.rotate = rotate
 
     def __len__(self) -> int:
         """Return length of this Dataset."""
@@ -407,7 +408,10 @@ class Donuts_Fullframe(Dataset):
                 if img_file in corrupted_files:
                     continue
 
-                state = np.load(img_file, allow_pickle=True)
+                # Load coral file - use context manager to ensure file is closed
+                with np.load(img_file, allow_pickle=True) as loaded_state:
+                    # Copy arrays to ensure they persist after context manager exits
+                    state = {key: loaded_state[key].copy() for key in loaded_state.keys()}
                 break  # Successfully loaded, exit retry loop
             except (EOFError, IOError, OSError) as e:
                 # File is corrupted, truncated, or missing - delete it
@@ -517,27 +521,64 @@ class Donuts_Fullframe(Dataset):
         # get the image file
         img_file = self.image_files[idx]
 
-        state = np.load(img_file, allow_pickle=True)
+        # Use context manager to ensure file is properly closed
+        with np.load(img_file, allow_pickle=True) as state:
+            # get the donut locations
+            fx, fy = (
+                torch.tensor(state["field_x"]) * np.pi / 180,
+                torch.tensor(state["field_y"]) * np.pi / 180,
+            )
 
-        # get the donut locations
-        fx, fy = (
-            torch.tensor(state["field_x"]) * np.pi / 180,
-            torch.tensor(state["field_y"]) * np.pi / 180,
-        )
+            # get the intra/extra flag
+            intra = torch.tensor(state["intra"]).int()
 
-        # get the intra/extra flag
-        intra = torch.tensor(state["intra"]).int()
+            # Choose which Zernike target to use based on rotation settings
+            zk_true_key = None
+            is_rotated = False
+            if self.rotate:
+                # Prefer new explicit positive/negative rotation fields when available
+                if self.rotation_direction == "pos" and "zk_true_camera_pos" in state:
+                    zk_true_key = "zk_true_camera_pos"
+                    is_rotated = True
+                elif self.rotation_direction == "neg" and "zk_true_camera_neg" in state:
+                    zk_true_key = "zk_true_camera_neg"
+                    is_rotated = True
+                # Legacy single-rotation field
+                elif "zk_true_camera" in state:
+                    zk_true_key = "zk_true_camera"
+                    is_rotated = True
+                # Fall back to unrotated if nothing else is present
+                elif "zk_true" in state:
+                    zk_true_key = "zk_true"
+                    is_rotated = False
+                else:
+                    raise KeyError(
+                        f"No suitable rotated Zernikes found in npz file when rotate=True. File: {img_file}"
+                    )
+            else:
+                if "zk_true" in state:
+                    zk_true_key = "zk_true"
+                    is_rotated = False
+                else:
+                    raise KeyError(f"'zk_true' not found in npz file. File: {img_file}")
 
-        if self.mask_mode:
-            zernikes = torch.tensor(state["zk_true"])
-            zernikes = zernikes[:, 0]
-            zernikes = zernikes[None, :]
-        else:
-            zernikes = torch.tensor(state["zk_true"])[:, self.noll_zk]
+            if self.mask_mode:
+                zernikes = torch.tensor(state[zk_true_key])
+                # zk_true_camera has 1 less dimension, so no need to index [:, 0]
+                if not is_rotated:
+                    zernikes = zernikes[:, 0]
+                zernikes = zernikes[None, :]
+            else:
+                zernikes = torch.tensor(state[zk_true_key])
+                # zk_true_camera has 1 less dimension, so indexing is different
+                if is_rotated:
+                    zernikes = zernikes[self.noll_zk]
+                else:
+                    zernikes = zernikes[:, self.noll_zk]
 
-        band_tensor = torch.tensor(state["band"]).int()
-        band = band_tensor.item()
-        img = torch.tensor(state["image_aligned"])
+            band_tensor = torch.tensor(state["band"]).int()
+            band = band_tensor.item()
+            img = torch.tensor(state["image_aligned"])
 
         # standardize all the inputs for the neural net
         if self.settings["transform"]:
@@ -582,7 +623,11 @@ class Donuts_Fullframe(Dataset):
             offset_amount = [0, 0]
             offset_vec = np.array([0.0, 0.0])
             offset_r = np.array(0.0)
-        zernikes = zernikes.float()[0, :]
+        # zk_true_camera is already 1D, so no need to index [0, :]
+        if zernikes.dim() > 1:
+            zernikes = zernikes.float()[0, :]
+        else:
+            zernikes = zernikes.float()
 
         output = {
             "image": img,
@@ -598,50 +643,6 @@ class Donuts_Fullframe(Dataset):
         if self.coral_mode:
             coral_output = self.sample_coral()
             output.update(coral_output)
-
-            # Apply augmentations if enabled (only in training mode)
-            if self.augment and self.settings["mode"] == "train":
-                # Apply frequency-based augmentation 50% of the time
-                if torch.rand(1).item() > 0.5:
-                    try:
-                        # Randomly sample scale between 0.1 and 1.0 uniformly
-                        random_scale = torch.empty(1).uniform_(0.5, 1.0).item()
-                        # Apply augmentation (function handles device, shape, and dtype internally)
-                        augmented_img = augment_data_torch(
-                            img, coral_output["coral_image"], scale=random_scale, kmin=self.augment_kmin
-                        )
-
-                        # Ensure augmented image matches original image's dtype and device
-                        augmented_img = augmented_img.to(dtype=img.dtype, device=img.device)
-
-                        # Restore original shape if img had extra dimensions
-                        original_shape = img.shape
-                        if augmented_img.shape != original_shape:
-                            # Add back channel/batch dimensions if needed
-                            while len(augmented_img.shape) < len(original_shape):
-                                augmented_img = augmented_img.unsqueeze(0)
-
-                        output["image"] = augmented_img
-                    except Exception as e:
-                        # If augmentation fails, use original image and log warning
-                        logger.warning(f"Frequency augmentation failed, using original image: {e}")
-                        # output["image"] remains as img
-
-                # Apply hot pixel augmentation 10% of the time (independent of frequency augmentation)
-                # This can be applied to the original image or the frequency-augmented image
-                try:
-                    current_img = output.get("image", img)
-                    hot_pixel_img = add_random_hot_pixel(
-                        current_img, sigma=0.05, prob=0.1, min_scale=5.0, max_scale=20
-                    )
-                    # Ensure dtype and device match (function preserves device, but ensure dtype consistency)
-                    if hot_pixel_img.dtype != img.dtype:
-                        hot_pixel_img = hot_pixel_img.to(dtype=img.dtype)
-                    output["image"] = hot_pixel_img
-                except Exception as e:
-                    # If hot pixel augmentation fails, keep current image and log warning
-                    logger.warning(f"Hot pixel augmentation failed: {e}")
-                    # output["image"] remains as current_img
 
         return output
 
@@ -711,6 +712,7 @@ class zernikeDataset(Dataset):
         train=True,
         data_dir="/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator/",
         alpha=1e-3,
+        rotate=False,
         return_true=False,
         coral_mode=False,
         coral_filepath="/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator_real/",
@@ -729,6 +731,8 @@ class zernikeDataset(Dataset):
             Parameter used for adjusting Zernike coefficients during processing.
         return_true : bool, optional, default=False
             Whether to return the true Zernike coefficients or estimated coefficients.
+        rotate : bool, optional, default=False
+            Whether to use rotated Zernikes in the camera frame when available.
         coral_mode : bool, optional, default=False
             Whether to enable coral mode for real data sampling.
         coral_filepath : str, optional
@@ -742,7 +746,7 @@ class zernikeDataset(Dataset):
         if train:
             self.image_dir = data_dir + "/train"
         else:
-            self.image_dir = data_dir + "/train"
+            self.image_dir = data_dir + "/val"
 
         self.filename = []
         for root, _, files in os.walk(self.image_dir):
@@ -750,11 +754,8 @@ class zernikeDataset(Dataset):
                 file_path = os.path.join(root, file)
                 self.filename.append(file_path)
 
-        if train:
-            self.filename = self.filename[: int(0.8 * len(self.filename))]
-        else:
-            self.filename = self.filename[int(0.8 * len(self.filename)) :]
-
+        # Use all files in the directory (no additional train/val split)
+        # The split is already handled by using different directories (train/val)
         self.num_samples = len(self.filename)
         self.alpha = alpha
         self.return_true = return_true
@@ -778,6 +779,7 @@ class zernikeDataset(Dataset):
         # Always use CPU in dataset - PyTorch Lightning handles GPU transfer
         # This avoids CUDA reinitialization issues with num_workers > 0
         self.device = torch.device("cpu")
+        self.rotate = rotate
 
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""
@@ -958,8 +960,14 @@ class zernikeDataset(Dataset):
                 "header": json.loads(str(npz_data["header_json"])),
             }
             # Add conditional fields if they exist
-            if "zk_true" in npz_data:
+            # If rotate is enabled, prefer zk_true_camera, otherwise use zk_true
+            if self.rotate and "zk_true_camera" in npz_data:
+                loaded_data["zk_true"] = torch.from_numpy(npz_data["zk_true_camera"])
+            elif "zk_true" in npz_data:
                 loaded_data["zk_true"] = torch.from_numpy(npz_data["zk_true"])
+            elif self.rotate:
+                # If rotate is True but zk_true_camera doesn't exist, raise error
+                raise KeyError("'zk_true_camera' not found in npz file when rotate=True")
         except (IOError, OSError, RuntimeError, KeyError) as e:
             logger.error(
                 f"Error loading file {self.filename[idx] if idx < len(self.filename) else 'unknown'}: {e}"

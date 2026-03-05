@@ -10,6 +10,7 @@ import logging
 from typing import Any, Tuple
 
 # Third-party imports
+import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
@@ -69,6 +70,11 @@ class AggregatorNet_Coral(pl.LightningModule):
         tradeoff_scale: float = 0.001,
         threshold: float = 0.9,
         dare_gram_weight: float = 1.0,
+        exp_rise_x1: float = 0.15,
+        exp_rise_x2: float = 0.16,
+        weight_decay: float = 0.0,
+        coral_mode: bool = False,
+        rotate: bool = False,
     ):
         """Initialize the AggregatorNet_Coral model.
 
@@ -97,6 +103,22 @@ class AggregatorNet_Coral(pl.LightningModule):
         dare_gram_weight : float, optional, default=1.0
             Overall weight to scale the DARE-GRAM loss relative to regression loss.
             Higher values prioritize domain adaptation over regression accuracy.
+        exp_rise_x1 : float, optional, default=0.15
+            Lower threshold for exponential rise function in DARE-GRAM scaling.
+            When mRSSE <= x1, scale_loss = 1.0 (full DARE-GRAM influence).
+        exp_rise_x2 : float, optional, default=0.16
+            Upper threshold for exponential rise function in DARE-GRAM scaling.
+            When mRSSE >= x2, scale_loss = 0.0 (no DARE-GRAM influence).
+            Exponential transition occurs between x1 and x2.
+        weight_decay : float, optional, default=0.0
+            Weight decay (L2 regularization) coefficient for the optimizer.
+            Helps prevent overfitting by penalizing large weights.
+        coral_mode : bool, optional, default=False
+            Whether coral/real data sampling is enabled for domain adaptation.
+            When True, the dataset samples real observational data alongside simulation data.
+        rotate : bool, optional, default=False
+            Whether to use rotated Zernikes (zk_true_camera) in camera frame.
+            When True, uses camera frame coordinates instead of telescope frame.
 
         Notes
         -----
@@ -116,6 +138,7 @@ class AggregatorNet_Coral(pl.LightningModule):
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
+            dropout=0.2,  # 50% dropout for regularization
             batch_first=True,
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
@@ -125,6 +148,9 @@ class AggregatorNet_Coral(pl.LightningModule):
         # Cache for transformer features (for domain adaptation)
         self.transformer_features = None
         self.val_mRSSE: torch.Tensor | None = None
+        # Accumulators for epoch-average validation mRSSE
+        self._val_mRSSE_sum: torch.Tensor | None = None
+        self._val_batch_count: int = 0
 
     def forward(self, x: tuple[torch.Tensor, torch.Tensor], cache_features: bool = False) -> torch.Tensor:
         """Forward pass of the AggregatorNet_Coral model.
@@ -162,7 +188,8 @@ class AggregatorNet_Coral(pl.LightningModule):
         if cache_features:
             # Use the last token's features before FC layer
             # Convert to float32 for SVD operations in DARE-GRAM loss
-            self.transformer_features = x_tensor[:, -1, :].detach().float()
+            # IMPORTANT: Do NOT detach here - we need gradients for DARE-GRAM loss training
+            self.transformer_features = x_tensor[:, -1, :].float()
 
         x_tensor = x_tensor[:, -1, :]  # Take the last token's output
         x_tensor = self.fc(x_tensor)  # Predict the next token
@@ -221,6 +248,7 @@ class AggregatorNet_Coral(pl.LightningModule):
                 torch.use_deterministic_algorithms(True)
 
         # Determine rank k based on threshold
+        # Use at least eigenvalue at index 1, but prefer threshold if reached
         T = self.hparams.threshold
 
         # Find index where cumulative variance reaches threshold
@@ -258,6 +286,7 @@ class AggregatorNet_Coral(pl.LightningModule):
             return torch.tensor(0.0, device=self.device)
 
         # Compute pseudo-inverse with low-rank regularization
+        # Add minimum rtol to prevent numerical instability
         rtol_A = max((L_A[k] / L_A[0]).item(), 1e-6)
         rtol_B = max((L_B[k] / L_B[0]).item(), 1e-6)
         A_pinv = torch.linalg.pinv(cov_A, rtol=rtol_A)
@@ -285,36 +314,38 @@ class AggregatorNet_Coral(pl.LightningModule):
         return dare_gram_loss
 
     def exp_rise_flipped(self, loss, a=6.0):
-        """Exponentially rises from 0 at loss=0.10 to 1 at loss=0.09.
+        """Exponential rise function for DARE-GRAM scaling, flipped to give higher scale at lower loss.
 
-        Then flattens at 0 above 0.10 and 1 below 0.09.
+        Uses exp_rise_x1 and exp_rise_x2 hyperparameters to control transition region.
+        When loss <= x1: scale = 1.0 (full DARE-GRAM)
+        When loss >= x2: scale = 0.0 (no DARE-GRAM)
+        Between x1 and x2: exponential transition
         """
-        loss = torch.as_tensor(loss, dtype=torch.float32, device=self.device)
+        # Convert loss to scalar
+        loss_val = loss.item() if isinstance(loss, torch.Tensor) else float(loss)
 
-        # CHANGE HERE:
-        x1 = torch.tensor(0.09, dtype=torch.float32, device=loss.device)  # Peak (1.0)
-        x2 = torch.tensor(0.10, dtype=torch.float32, device=loss.device)  # Start (0.0)
+        # Get hyperparameters (must be provided, will error if not)
+        x1 = float(self.hparams.exp_rise_x1)
+        x2 = float(self.hparams.exp_rise_x2)
+        a = float(a)
 
-        a = torch.tensor(a, dtype=torch.float32, device=loss.device)
+        # Region 1: loss <= x1 → f = 0
+        if loss_val <= x1:
+            f = 0.0
+        # Region 3: loss >= x2 → f = 1
+        elif loss_val >= x2:
+            f = 1.0
+        # Region 2: x1 < loss < x2 → exponential rise
+        else:
+            t = (loss_val - x1) / (x2 - x1)
+            f = (1 - np.exp(-a * t)) / (1 - np.exp(-a))
 
-        f = torch.zeros_like(loss, dtype=torch.float32)
-
-        # Region 1: loss <= 0.09 (Before flip = 0)
-        f[loss <= x1] = 0.0
-
-        # Region 2: 0.09 < loss < 0.10
-        mask = (loss > x1) & (loss < x2)
-        t = (loss[mask] - x1) / (x2 - x1)
-        f[mask] = (1 - torch.exp(-a * t)) / (1 - torch.exp(-a))
-
-        # Region 3: loss >= 0.10 (Before flip = 1)
-        f[loss >= x2] = 1.0
-
-        # FLIP:
-        # 0.10 (which was 1) -> becomes 0
-        # 0.09 (which was 0) -> becomes 1
+        # Flip: high f (when loss is high) becomes low scale (when loss is high)
+        # We want: low loss (good) → high scale (more DARE-GRAM), high loss (bad) → low scale (less DARE-GRAM)
         f = -f + 1
-        return f
+
+        # Convert back to tensor on correct device
+        return torch.tensor(f, dtype=torch.float32, device=self.device)
 
     def calc_losses(
         self,
@@ -322,7 +353,7 @@ class AggregatorNet_Coral(pl.LightningModule):
         batch_idx: int,
         use_coral: bool = False,
         add_dare_gram_to_loss: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Calculate losses with optional DARE-GRAM domain adaptation.
 
         Parameters
@@ -343,14 +374,14 @@ class AggregatorNet_Coral(pl.LightningModule):
         Returns
         -------
         tuple
-            (total_loss, mRSSE, dare_gram_loss)
+            (total_loss, mRSSE, dare_gram_loss, dare_gram_scale)
             dare_gram_loss is 0 if use_coral=False or coral data not available.
+            dare_gram_scale is the scaling factor from exp_rise_flipped function.
         """
         x, y = batch  # y is the target token
 
         # Check if coral data is present (8 elements in x vs 4 elements)
         has_coral = len(x) == 8
-
         if has_coral:
             x_input, x_mean, filter_name, chipid, coral_x_total, coral_x_mean, coral_filter, coral_chipid = x
         else:
@@ -370,11 +401,13 @@ class AggregatorNet_Coral(pl.LightningModule):
         mRSSE = torch.sqrt(sse).mean()
 
         # DARE-GRAM loss if coral data is available
+        # Skip computation entirely if dare_gram_weight is 0.0 for faster training
         dare_gram_loss = torch.tensor(0.0, device=self.device)
-        if use_coral and has_coral:
+        if use_coral and has_coral and self.hparams.dare_gram_weight > 0.0:
             try:
                 # Forward pass on target/coral data
                 # Use eval mode to prevent BN updates (keep statistics source-domain only)
+                # NOTE: eval() doesn't disable gradients, only affects batch norm/dropout
                 was_training = self.training
                 try:
                     self.eval()
@@ -384,20 +417,27 @@ class AggregatorNet_Coral(pl.LightningModule):
                     if was_training:
                         self.train()
 
-                # Compute DARE-GRAM loss
+                # Compute DARE-GRAM loss (now has gradients since we removed .detach() from features)
                 dare_gram_loss = self.dare_gram_loss(source_features, target_features)
             except (RuntimeError, ValueError, IndexError) as e:
                 logger.warning(f"DARE-GRAM loss computation failed: {e}")
+                # Use zero tensor (no gradients needed if loss computation failed)
                 dare_gram_loss = torch.tensor(0.0, device=self.device)
 
         # Add DARE-GRAM to loss only if requested
         if add_dare_gram_to_loss:
-            scale_loss = self.exp_rise_flipped(self.val_mRSSE if self.val_mRSSE is not None else mRSSE)
+            # Use epoch-averaged val_mRSSE if available, otherwise use current batch mRSSE
+            # (for first training batch before first validation completes)
+            mRSSE_for_scaling = self.val_mRSSE if self.val_mRSSE is not None else mRSSE
+            scale_loss = self.exp_rise_flipped(mRSSE_for_scaling)
             total_loss = regression_loss + self.hparams.dare_gram_weight * scale_loss * dare_gram_loss
         else:
             total_loss = regression_loss
+            # Still compute scale_loss for logging even if not added to loss
+            mRSSE_for_scaling = self.val_mRSSE if self.val_mRSSE is not None else mRSSE
+            scale_loss = self.exp_rise_flipped(mRSSE_for_scaling)
 
-        return total_loss, mRSSE, dare_gram_loss
+        return total_loss, mRSSE, dare_gram_loss, scale_loss
 
     def training_step(self, batch: tuple, batch_idx: int):
         """Perform a single training step with domain adaptation.
@@ -420,10 +460,11 @@ class AggregatorNet_Coral(pl.LightningModule):
         - DARE-GRAM loss is added to regression loss if coral data is available.
         - Training loss, mRSSE, and DARE-GRAM loss are logged for monitoring.
         """
-        loss, mRSSE, dare_gram_loss = self.calc_losses(batch, batch_idx, use_coral=True)
+        loss, mRSSE, dare_gram_loss, dare_gram_scale = self.calc_losses(batch, batch_idx, use_coral=True)
         self.log("train_loss", loss, prog_bar=True, sync_dist=True)
         self.log("train_mRSSE", mRSSE, sync_dist=True)
         self.log("train_dare_gram_loss", dare_gram_loss, sync_dist=True)
+        self.log("train_dare_gram_scale", dare_gram_scale, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -446,16 +487,39 @@ class AggregatorNet_Coral(pl.LightningModule):
         - DARE-GRAM is computed for logging but not added to validation loss.
         - This allows monitoring domain adaptation without affecting validation metrics.
         - Validation loss, mRSSE, and DARE-GRAM loss are logged for monitoring.
+        - mRSSE is accumulated across batches to compute epoch average.
         """
         # Compute DARE-GRAM for logging but don't add it to validation loss
-        loss, mRSSE, dare_gram_loss = self.calc_losses(
+        loss, mRSSE, dare_gram_loss, dare_gram_scale = self.calc_losses(
             batch, batch_idx, use_coral=True, add_dare_gram_to_loss=False
         )
         self.log("val_loss", loss, prog_bar=True, sync_dist=True)
         self.log("val_mRSSE", mRSSE, prog_bar=True, sync_dist=True)
         self.log("val_dare_gram_loss", dare_gram_loss, sync_dist=True)
-        self.val_mRSSE = mRSSE.clone().detach()  # Store a copy to avoid tensor reference issues
+        self.log("val_dare_gram_scale", dare_gram_scale, sync_dist=True)
+
+        # Accumulate mRSSE for epoch-average calculation
+        mRSSE_detached = mRSSE.detach()
+        if self._val_mRSSE_sum is None:
+            self._val_mRSSE_sum = torch.zeros_like(mRSSE_detached)
+            self._val_batch_count = 0
+        self._val_mRSSE_sum += mRSSE_detached
+        self._val_batch_count += 1
+
         return loss
+
+    def on_validation_epoch_end(self):
+        """Called at the end of validation epoch to compute epoch-average mRSSE.
+
+        Computes the average validation mRSSE across all batches in the epoch
+        and stores it for use in the next training epoch's DARE-GRAM scaling.
+        """
+        if self._val_mRSSE_sum is not None and self._val_batch_count > 0:
+            # Store epoch-averaged mRSSE for use in next training epoch
+            self.val_mRSSE = (self._val_mRSSE_sum / self._val_batch_count).clone().detach()
+            # Reset accumulators for next epoch
+            self._val_mRSSE_sum = None
+            self._val_batch_count = 0
 
     def loss_fn(self, x, y):
         """Compute the loss using the Root Sum of Squared Errors (mRSSE).
@@ -495,7 +559,16 @@ class AggregatorNet_Coral(pl.LightningModule):
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
-                "scheduler": ReduceLROnPlateau(optimizer),
+                "scheduler": ReduceLROnPlateau(
+                    optimizer,
+                    mode="min",
+                    factor=0.5,  # Reduce LR by half when plateau
+                    patience=5,  # Wait 5 validation checks (epochs) before reducing
+                    threshold=1e-3,  # Minimum change to qualify as an improvement
+                    threshold_mode="abs",  # Use absolute threshold
+                    min_lr=1e-7,  # Minimum learning rate
+                    verbose=True,
+                ),
                 "monitor": "val_loss",
                 "frequency": 1,
             },

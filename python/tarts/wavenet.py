@@ -171,8 +171,14 @@ class WaveNet(nn.Module):
 
         # Get the number of input channels required by the CNN
         if self.is_timm_model:
-            # timm models (MobileNet, etc.)
-            n_channels = self.cnn.conv_stem.in_channels
+            # timm: MobileNet/ConvNeXt use conv_stem, ResNet uses conv1
+            first_conv = getattr(self.cnn, "conv_stem", None) or getattr(self.cnn, "conv1", None)
+            if first_conv is None:
+                msg = (
+                    f"WaveNet CNN backbone {type(self.cnn).__name__} has no " "'conv_stem' or 'conv1' layer."
+                )
+                raise AttributeError(msg)
+            n_channels = first_conv.in_channels
         else:
             # torchvision models (ResNet, etc.)
             n_channels = self.cnn.conv1.in_channels
