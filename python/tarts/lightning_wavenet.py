@@ -134,6 +134,9 @@ class DonutLoader_Fullframe(pl.LightningDataModule):
             pin_memory=self.hparams.pin_memory,
             shuffle=shuffle,
             drop_last=drop_last,
+            prefetch_factor=(
+                4 if self.hparams.num_workers > 0 else None
+            ),  # Prefetch more batches to prevent GPU waiting
         )
 
     def train_dataloader(self) -> DataLoader:

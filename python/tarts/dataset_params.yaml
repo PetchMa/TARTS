@@ -8,10 +8,11 @@ deg_per_pix : 0.00005555555
 mm_pix : 0.01
 alpha: 1
 max_seq_len: 200
-butler_repo_path: 'butler'
+# butler_repo_path: 'butler'
+butler_repo_path: 'butler_training_fix'
 
 # Model architecture parameters
-cnn_model: 'mobilenetv4_conv_small'  # Options: mobilenetv4_conv_small, resnet18, resnet34, resnet50
+cnn_model: 'mobilenetv4_conv_small'  # Options: mobilenetv4_conv_small, mobilenetv4_conv_medium, mobilenetv4_conv_large, mobilenetv4_hybrid_large, resnet18, resnet34, resnet50
 finetune_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain'
 finetune_filepath_train: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain/train/'
 finetune_filepath_val: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain/val/'
@@ -22,20 +23,29 @@ coral_filepath_usdf_train: '~/train'
 coral_filepath_usdf_val: '~/val'
 aggregator_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator/'
 aggregator_train_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator/train/'
-aggregator_val_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator/val/'
-fullframe_train_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_plane_ml_opsim_0925/train/'
-fullframe_val_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_plane_ml_opsim_0925/val/'
-fullframe_test_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_plane_ml_opsim_0925/test/'
+aggregator_val_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator_temp/val/'
+fullframe_train_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_frame_final/train/'
+fullframe_val_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_frame_final/val/'
+fullframe_test_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_frame_final/test/'
 aggregator_real_filepath: "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator_real"
 aggregator_real_train_filepath: "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator_real/train"
 aggregator_real_val_filepath: "/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator_real/val"
+batoid_filepath_train: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/batoid/train/'
+batoid_filepath_val: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/batoid/val/'
+# Optional: path to DOF table (.npy shape (N, n_dof) or .csv). If set, each sample uses a row; if unset, all samples use zero DOF.
+# batoid_dof_table: '/path/to/dof_table.npy'
 
 # AggregatorNet model parameters
 aggregator_model:
-  d_model: 128
+  d_model: 32
   nhead: 4
   num_layers: 6
-  dim_feedforward: 512
+  dim_feedforward: 32
+# aggregator_model:
+#   d_model: 128
+#   nhead: 4
+#   num_layers: 6
+#   dim_feedforward: 512
 
 noll_zk:
 - 4
