@@ -6,6 +6,7 @@ The method aligns inverse Gram matrices between source and target domains withou
 
 # Standard library imports
 import logging
+import numpy as np
 from typing import Any, Dict, Tuple
 
 # Third-party imports
@@ -58,6 +59,8 @@ class WaveNetSystem_Coral(pl.LightningModule):
         tradeoff_scale: float = 0.001,
         threshold: float = 0.9,
         dare_gram_weight: float = 1.0,
+        exp_rise_x1: float = 0.15,
+        exp_rise_x2: float = 0.16,
     ) -> None:
         """Create the WaveNet with DARE-GRAM domain adaptation.
 
@@ -92,6 +95,13 @@ class WaveNetSystem_Coral(pl.LightningModule):
         dare_gram_weight: float, default=1.0
             Overall weight to scale the DARE-GRAM loss relative to regression loss.
             Higher values prioritize domain adaptation over regression accuracy.
+        exp_rise_x1: float, default=0.15
+            Lower threshold for exponential rise function in DARE-GRAM scaling.
+            When mRSSE <= x1, scale_loss = 1.0 (full DARE-GRAM influence).
+        exp_rise_x2: float, default=0.16
+            Upper threshold for exponential rise function in DARE-GRAM scaling.
+            When mRSSE >= x2, scale_loss = 0.0 (no DARE-GRAM influence).
+            Exponential transition occurs between x1 and x2.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -235,9 +245,9 @@ class WaveNetSystem_Coral(pl.LightningModule):
         return zk_pred, zk_true
 
     def exp_rise_flipped(self, loss, a=6.0):
-        """Exponentially rises from 0 at loss=0.13 to 1 at loss=0.16.
+        """Exponentially rises from 0 at loss=x1 to 1 at loss=x2.
 
-        Then flattens at 1 above 0.16 and 0 below 0.13.
+        Then flattens at 1 above x2 and 0 below x1.
 
         Parameters
         ----------
@@ -246,28 +256,31 @@ class WaveNetSystem_Coral(pl.LightningModule):
         a: float
             Controls steepness (larger = sharper rise).
         """
-        # Convert loss to tensor and ensure float32 dtype
-        loss = torch.as_tensor(loss, dtype=torch.float32, device=self.device_val)
+        # Convert loss to scalar
+        loss_val = loss.item() if isinstance(loss, torch.Tensor) else float(loss)
 
-        # Ensure scalar values are float32 tensors
-        x1 = torch.tensor(0.13, dtype=torch.float32, device=loss.device)
-        x2 = torch.tensor(0.16, dtype=torch.float32, device=loss.device)
-        a = torch.tensor(a, dtype=torch.float32, device=loss.device)
+        # Get hyperparameters (must be provided, will error if not)
+        x1 = float(self.hparams.exp_rise_x1)
+        x2 = float(self.hparams.exp_rise_x2)
+        a = float(a)
 
-        f = torch.zeros_like(loss, dtype=torch.float32)
+        # Region 1: loss <= x1 → f = 0
+        if loss_val <= x1:
+            f = 0.0
+        # Region 3: loss >= x2 → f = 1
+        elif loss_val >= x2:
+            f = 1.0
+        # Region 2: x1 < loss < x2 → exponential rise
+        else:
+            t = (loss_val - x1) / (x2 - x1)
+            f = (1 - np.exp(-a * t)) / (1 - np.exp(-a))
 
-        # Region 1: loss <= 0.13 → f = 0
-        f[loss <= x1] = 0.0
-
-        # Region 2: 0.13 < loss < 0.16 → exponential rise
-        mask = (loss > x1) & (loss < x2)
-        t = (loss[mask] - x1) / (x2 - x1)
-        f[mask] = (1 - torch.exp(-a * t)) / (1 - torch.exp(-a))
-
-        # Region 3: loss >= 0.16 → f = 1
-        f[loss >= x2] = 1.0
+        # Flip: high f (when loss is high) becomes low scale (when loss is high)
+        # We want: low loss (good) → high scale (more DARE-GRAM), high loss (bad) → low scale (less DARE-GRAM)
         f = -f + 1
-        return f
+
+        # Convert back to tensor on correct device
+        return torch.tensor(f, dtype=torch.float32, device=self.device_val)
 
     def calc_losses(
         self,
@@ -275,7 +288,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
         batch_idx: int,
         use_coral: bool = False,
         add_dare_gram_to_loss: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Predict Zernikes and calculate losses with optional DARE-GRAM.
 
         Parameters
@@ -293,8 +306,9 @@ class WaveNetSystem_Coral(pl.LightningModule):
         Returns
         -------
         tuple
-            (total_loss, mRSSE, dare_gram_loss)
+            (total_loss, mRSSE, dare_gram_loss, dare_gram_scale)
             dare_gram_loss is 0 if use_coral=False.
+            dare_gram_scale is the scaling factor from exp_rise_flipped function.
         """
         zk_pred, zk_true = self.predict_step(batch, batch_idx)
 
@@ -311,8 +325,9 @@ class WaveNetSystem_Coral(pl.LightningModule):
         mRSSE = torch.sqrt(sse).mean()
 
         # DARE-GRAM loss if coral data is available
+        # Skip computation entirely if dare_gram_weight is 0.0 for faster training
         dare_gram_loss = torch.tensor(0.0, device=self.device_val)
-        if use_coral and "coral_image" in batch:
+        if use_coral and "coral_image" in batch and self.hparams.dare_gram_weight > 0.0:
             try:
                 # Forward pass on source data to get features
                 zk_pred_s, _ = self.predict_step(batch, batch_idx)
@@ -349,15 +364,18 @@ class WaveNetSystem_Coral(pl.LightningModule):
             total_loss = regression_loss + self.hparams.dare_gram_weight * scale_loss * dare_gram_loss
         else:
             total_loss = regression_loss
+            # Still compute scale_loss for logging even if not added to loss
+            scale_loss = self.exp_rise_flipped(self.val_mRSSE if self.val_mRSSE is not None else mRSSE)
 
-        return total_loss, mRSSE, dare_gram_loss
+        return total_loss, mRSSE, dare_gram_loss, scale_loss
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Execute training step on a batch."""
-        loss, mRSSE, dare_gram_loss = self.calc_losses(batch, batch_idx, use_coral=True)
+        loss, mRSSE, dare_gram_loss, dare_gram_scale = self.calc_losses(batch, batch_idx, use_coral=True)
         self.log("train_loss", loss, sync_dist=True, prog_bar=True)
         self.log("train_mRSSE", mRSSE, sync_dist=True)
         self.log("train_dare_gram_loss", dare_gram_loss, sync_dist=True)
+        self.log("train_dare_gram_scale", dare_gram_scale, sync_dist=True)
 
         return loss
 
@@ -365,14 +383,21 @@ class WaveNetSystem_Coral(pl.LightningModule):
         """Execute validation step on a batch."""
         # Compute DARE-GRAM for logging but don't add it to validation loss
         # This allows monitoring domain adaptation without affecting validation metrics
-        loss, mRSSE, dare_gram_loss = self.calc_losses(
+        loss, mRSSE, dare_gram_loss, dare_gram_scale = self.calc_losses(
             batch, batch_idx, use_coral=True, add_dare_gram_to_loss=False
         )
         self.log("val_loss", loss, sync_dist=True, prog_bar=True)
         self.log("val_mRSSE", mRSSE, sync_dist=True)
         self.log("val_dare_gram_loss", dare_gram_loss, sync_dist=True)
-        self.val_mRSSE = mRSSE.clone().detach()  # Store a copy to avoid tensor reference issues
+        self.log("val_dare_gram_scale", dare_gram_scale, sync_dist=True)
         return loss
+
+    def on_validation_epoch_end(self):
+        """Update val_mRSSE with epoch-averaged value after validation completes."""
+        # Get the epoch-averaged val_mRSSE from logged metrics
+        if "val_mRSSE" in self.trainer.callback_metrics:
+            epoch_avg_val_mRSSE = self.trainer.callback_metrics["val_mRSSE"]
+            self.val_mRSSE = epoch_avg_val_mRSSE.clone().detach()
 
     def configure_optimizers(self) -> Any:
         """Configure the optimizer."""
@@ -384,8 +409,17 @@ class WaveNetSystem_Coral(pl.LightningModule):
             return {
                 "optimizer": optimizer,
                 "lr_scheduler": {
-                    "scheduler": ReduceLROnPlateau(optimizer),
-                    "monitor": "val_loss",
+                    "scheduler": ReduceLROnPlateau(
+                        optimizer,
+                        mode="min",
+                        factor=0.5,  # Reduce LR by half when plateau
+                        patience=5,  # Wait 5 validation checks (epochs) before reducing
+                        threshold=1e-3,  # Minimum change to qualify as an improvement
+                        threshold_mode="abs",  # Use absolute threshold
+                        min_lr=1e-7,  # Minimum learning rate
+                        verbose=True,
+                    ),
+                    "monitor": "val_mRSSE",  # Monitor val_mRSSE instead of val_loss for better stability
                     "frequency": 1,
                 },
             }
