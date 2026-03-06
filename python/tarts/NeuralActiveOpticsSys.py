@@ -38,7 +38,43 @@ logger = logging.getLogger(__name__)
 
 
 class NeuralActiveOpticsSys(pl.LightningModule):
-    """Transfer learning driven WaveNet."""
+    """Neural Active Optics System: AlignNet + WaveNet + AggregatorNet pipeline.
+
+    For inference speed you can:
+    - Compile submodules only: pass compile_models=True (each submodel is compiled).
+    - Compile the entire system: use create_compiled() or wrap with torch.compile(model)
+      after construction to fuse across submodules (may have graph breaks due to dynamic
+      control flow in forward).
+    """
+
+    @classmethod
+    def create_compiled(cls, *, backend=None, mode=None, **kwargs):
+        """Build a NeuralActiveOpticsSys and wrap it with torch.compile for full-system optimization.
+
+        Use this for deployment when you want one compiled graph across AlignNet, WaveNet,
+        and AggregatorNet. The first run may be slow (compilation); later runs are faster.
+
+        Parameters
+        ----------
+        backend : str, optional
+            torch.compile backend (e.g. "inductor" for CPU, None for default GPU).
+        mode : str, optional
+            torch.compile mode ("default", "reduce-overhead", "max-autotune").
+        **kwargs
+            Passed to NeuralActiveOpticsSys.__init__().
+
+        Returns
+        -------
+        compiled_model
+            torch.compile(NeuralActiveOpticsSys(**kwargs)), with optional backend and mode.
+        """
+        model = cls(**kwargs)
+        compile_kw = {}
+        if backend is not None:
+            compile_kw["backend"] = backend
+        if mode is not None:
+            compile_kw["mode"] = mode
+        return torch.compile(model, **compile_kw)
 
     def __init__(
         self,
@@ -82,7 +118,8 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             Whether to apply torch.compile to the submodels (WaveNet, AlignNet, AggregatorNet).
             This can significantly speed up inference but may increase compilation time on first run.
             Automatically selects backend: "inductor" for CPU, default for GPU.
-            Defaults to False.
+            For full-system compilation (one fused graph), use create_compiled() or
+            torch.compile(model) after construction. Defaults to False.
         ood_model_path : str, optional
             Path to OOD detection model (joblib file). If provided, OOD detection will be performed
             during inference and scores will be stored in internal metadata. Defaults to None.

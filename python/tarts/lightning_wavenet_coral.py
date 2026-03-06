@@ -118,6 +118,16 @@ class WaveNetSystem_Coral(pl.LightningModule):
         self.inputShape = DEFAULT_INPUT_SHAPE
         self.val_mRSSE: torch.Tensor | None = None
 
+    def _dare_gram_enabled(self) -> bool:
+        """Return True if DARE-GRAM can contribute non-zero loss.
+
+        This is used to skip expensive DARE-GRAM computations (SVD/pinv, extra forward)
+        when the effective weight is zero.
+        """
+        return float(self.hparams.dare_gram_weight) != 0.0 and (
+            float(self.hparams.tradeoff_angle) != 0.0 or float(self.hparams.tradeoff_scale) != 0.0
+        )
+
     def dare_gram_loss(self, features_source: torch.Tensor, features_target: torch.Tensor) -> torch.Tensor:
         """Compute DARE-GRAM loss between source and target features.
 
@@ -324,15 +334,18 @@ class WaveNetSystem_Coral(pl.LightningModule):
         regression_loss = sse.mean() + self.hparams.alpha * A.square().sum()
         mRSSE = torch.sqrt(sse).mean()
 
-        # DARE-GRAM loss if coral data is available
-        # Skip computation entirely if dare_gram_weight is 0.0 for faster training
-        dare_gram_loss = torch.tensor(0.0, device=self.device_val)
-        if use_coral and "coral_image" in batch and self.hparams.dare_gram_weight > 0.0:
-            try:
-                # Forward pass on source data to get features
-                zk_pred_s, _ = self.predict_step(batch, batch_idx)
+        # Compute DARE-GRAM scaling first. If it is 0, DARE-GRAM is effectively disabled for
+        # this step and we can skip its expensive computation entirely (extra forward + SVD/pinv).
+        scale_loss = self.exp_rise_flipped(self.val_mRSSE if self.val_mRSSE is not None else mRSSE)
+        scale_is_zero = float(scale_loss.item()) == 0.0
 
-                # Forward pass on target/coral data
+        # DARE-GRAM loss if coral data is available
+        # Skip computation entirely if the effective DARE-GRAM weight is 0.0 for faster training
+        dare_gram_loss = torch.tensor(0.0, device=self.device_val)
+        if use_coral and "coral_image" in batch and self._dare_gram_enabled() and not scale_is_zero:
+            try:
+                # Features from the source forward were already produced by predict_step() above
+                # (WaveNet stores them on self.wavenet.predictor_features).
                 coral_img = batch["coral_image"]
                 coral_fx = batch["coral_field_x"]
                 coral_fy = batch["coral_field_y"]
@@ -360,12 +373,9 @@ class WaveNetSystem_Coral(pl.LightningModule):
 
         # Add DARE-GRAM to loss only if requested
         if add_dare_gram_to_loss:
-            scale_loss = self.exp_rise_flipped(self.val_mRSSE if self.val_mRSSE is not None else mRSSE)
             total_loss = regression_loss + self.hparams.dare_gram_weight * scale_loss * dare_gram_loss
         else:
             total_loss = regression_loss
-            # Still compute scale_loss for logging even if not added to loss
-            scale_loss = self.exp_rise_flipped(self.val_mRSSE if self.val_mRSSE is not None else mRSSE)
 
         return total_loss, mRSSE, dare_gram_loss, scale_loss
 
@@ -413,7 +423,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
                         optimizer,
                         mode="min",
                         factor=0.5,  # Reduce LR by half when plateau
-                        patience=5,  # Wait 5 validation checks (epochs) before reducing
+                        patience=3,  # Wait 5 validation checks (epochs) before reducing
                         threshold=1e-3,  # Minimum change to qualify as an improvement
                         threshold_mode="abs",  # Use absolute threshold
                         min_lr=1e-7,  # Minimum learning rate
