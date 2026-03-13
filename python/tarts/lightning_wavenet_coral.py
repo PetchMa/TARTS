@@ -7,7 +7,7 @@ The method aligns inverse Gram matrices between source and target domains withou
 # Standard library imports
 import logging
 import numpy as np
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 # Third-party imports
 import pytorch_lightning as pl
@@ -61,6 +61,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
         dare_gram_weight: float = 1.0,
         exp_rise_x1: float = 0.15,
         exp_rise_x2: float = 0.16,
+        backbone_lr: Optional[float] = None,
     ) -> None:
         """Create the WaveNet with DARE-GRAM domain adaptation.
 
@@ -102,6 +103,8 @@ class WaveNetSystem_Coral(pl.LightningModule):
             Upper threshold for exponential rise function in DARE-GRAM scaling.
             When mRSSE >= x2, scale_loss = 0.0 (no DARE-GRAM influence).
             Exponential transition occurs between x1 and x2.
+        backbone_lr: float, optional
+            If set, use this LR for the CNN backbone and lr for the predictor (e.g. 1e-5 for ResNet101).
         """
         super().__init__()
         self.save_hyperparameters()
@@ -410,10 +413,18 @@ class WaveNetSystem_Coral(pl.LightningModule):
             self.val_mRSSE = epoch_avg_val_mRSSE.clone().detach()
 
     def configure_optimizers(self) -> Any:
-        """Configure the optimizer."""
-        optimizer = torch.optim.AdamW(
-            self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay
-        )
+        """Configure the optimizer. Uses separate LRs for backbone vs predictor if backbone_lr is set."""
+        backbone_lr = getattr(self.hparams, "backbone_lr", None)
+        if backbone_lr is not None:
+            param_groups = [
+                {"params": self.wavenet.cnn.parameters(), "lr": float(backbone_lr)},
+                {"params": self.wavenet.predictor.parameters(), "lr": self.hparams.lr},
+            ]
+            optimizer = torch.optim.AdamW(param_groups, weight_decay=self.hparams.weight_decay)
+        else:
+            optimizer = torch.optim.AdamW(
+                self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay
+            )
 
         if self.hparams.lr_schedule:
             return {
@@ -423,7 +434,7 @@ class WaveNetSystem_Coral(pl.LightningModule):
                         optimizer,
                         mode="min",
                         factor=0.5,  # Reduce LR by half when plateau
-                        patience=3,  # Wait 5 validation checks (epochs) before reducing
+                        patience=5,  # Wait 5 validation checks (epochs) before reducing
                         threshold=1e-3,  # Minimum change to qualify as an improvement
                         threshold_mode="abs",  # Use absolute threshold
                         min_lr=1e-7,  # Minimum learning rate

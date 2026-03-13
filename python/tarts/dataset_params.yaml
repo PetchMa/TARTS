@@ -1,5 +1,8 @@
 version: 0
 seed: 42  # Random seed for reproducibility across all training scripts
+# Must be > 10k to ensure full coverage of all perturbation bins (SEQNUMs) when sampling.
+# Each SEQNUM = unique Zernike perturbation; dataset has 10k such perturbations.
+min_seqnums: 10001
 adjustment_WaveNet: 10
 adjustment_AlignNet: 120
 refinements: 1
@@ -23,7 +26,7 @@ coral_filepath_usdf_train: '~/train'
 coral_filepath_usdf_val: '~/val'
 aggregator_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator/'
 aggregator_train_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator/train/'
-aggregator_val_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator_temp/val/'
+aggregator_val_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator/val/'
 fullframe_train_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_frame_final/train/'
 fullframe_val_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_frame_final/val/'
 fullframe_test_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/full_frame_final/test/'
