@@ -770,7 +770,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         # Training data: zk_mean1 = torch.mean(zk_pred1, dim=0) / 1000
         # Since total_zernikes is already divided by 1000, we don't divide again
         mean_zernike = torch.mean(total_zernikes, dim=0)
-
+        self.mean_zernike = mean_zernike
         # (OPTIONAL) Check the types
         if self.aggregator_on:
             # Match training data: mean_zernike should NOT have convert_zernikes_deploy applied

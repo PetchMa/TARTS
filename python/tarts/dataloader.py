@@ -2,6 +2,7 @@
 
 # Standard library imports
 import glob
+import hashlib
 import logging
 import os
 import pickle
@@ -14,11 +15,50 @@ import torch
 from astropy.table import Table
 from torch.utils.data import Dataset
 
+try:
+    from tqdm import tqdm
+except ImportError:
+
+    def tqdm(iterable, **kwargs):
+        """Fallback when tqdm is not installed: return iterable unchanged."""
+        return iterable
+
+
 # Local/application imports
 from .constants import DEFAULT_NOLL_ZK, DEFAULT_TRAIN_FRACTION
 from .utils import shift_offcenter, transform_inputs
 
 logger = logging.getLogger(__name__)
+
+
+def _plot_seqnum_histogram(selected_seqnums: np.ndarray, save_path: str) -> None:
+    """Plot histogram of SEQNUM counts in the selected training set.
+
+    Used to verify uniform coverage across perturbations (one bin per SEQNUM).
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.warning("matplotlib not available; skipping SEQNUM histogram.")
+        return
+    fig, ax = plt.subplots(figsize=(10, 4))
+    # Exclude sentinel -1 if present
+    vals = selected_seqnums[selected_seqnums >= 0]
+    if vals.size == 0:
+        logger.warning("No valid SEQNUMs for histogram.")
+        return
+    ax.hist(vals, bins=min(100, max(50, int(np.ptp(vals)) + 1)), color="steelblue", edgecolor="white")
+    ax.set_xlabel("SEQNUM")
+    ax.set_ylabel("Sample count")
+    ax.set_title("SEQNUM distribution in training set (should be roughly uniform per bin)")
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    logger.info(f"SEQNUM histogram saved to {save_path}")
 
 
 class Donuts(Dataset):
@@ -319,15 +359,22 @@ class Donuts_Fullframe(Dataset):
         rotate: bool, default=False
             Whether to use rotated Zernike targets from the dataset when available.
         train_fraction: float, optional
-            Fraction of data to use (0.0-1.0). Applies to train and val when set.
+            Fraction of stamps per SEQNUM (0.0-1.0). Always uses full coverage of all
+            unique SEQNUMs (perturbations); this controls how many stamps per SEQNUM.
             For train, if None, uses DEFAULT_TRAIN_FRACTION. For val, if None, uses full data.
+        min_seqnums: int, default=10001
+            Unused; kept for API compatibility. Full coverage uses all unique SEQNUMs
+            found in the directory (number is logged).
         rotation_direction: Optional[str], default=None
-            If rotate=True and rotation_direction is set to \"pos\" or \"neg\",
-            use `zk_true_camera_pos` or `zk_true_camera_neg` from the dataset.
-            If None, falls back to legacy `zk_true_camera` / `zk_true` behaviour.
+            Required when rotate=True. Must be \"pos\" or \"neg\" to select
+            `zk_true_camera_pos` or `zk_true_camera_neg` from the dataset.
         """
         train_fraction = kwargs.pop("train_fraction", None)
         rotation_direction = kwargs.pop("rotation_direction", None)
+        _ = kwargs.pop("min_seqnums", 10001)  # Unused; kept for API compatibility
+        plot_seqnum_hist = kwargs.pop("plot_seqnum_hist", None)
+        # Optional: disable SEQNUM-balanced sampling and just use all images.
+        seqnum_balanced = kwargs.pop("seqnum_balanced", True)
         # Ignore deprecated augmentation params for backward compatibility
         kwargs.pop("augment", None)
         kwargs.pop("augment_scale", None)
@@ -352,11 +399,16 @@ class Donuts_Fullframe(Dataset):
         self.coral_filepath = coral_filepath
         self.coral_mode = coral_mode
         self.rotate = rotate
+        # Enforce explicit rotation direction when rotate=True to avoid silent mismatches
+        if self.rotate and rotation_direction not in ("pos", "neg"):
+            raise ValueError(
+                f"rotation_direction must be 'pos' or 'neg' when rotate=True "
+                f"(got {rotation_direction!r})."
+            )
         self.rotation_direction = rotation_direction
 
         if coral_mode:
             self.coral_image_files = []
-            # Use a temporary variable to avoid modifying the original path
             coral_data_path = coral_filepath
             if self.settings["mode"] == "train":
                 coral_data_path += "/train"
@@ -367,13 +419,93 @@ class Donuts_Fullframe(Dataset):
                     file_path = os.path.join(root, file)
                     self.coral_image_files.append(file_path)
 
-        if self.settings["mode"] == "train":
+        self.used_indices = list(range(len(self.image_files)))
+        if not seqnum_balanced:
+            # Unbalanced path: optional subsample by train_fraction (no SEQNUM balancing).
             frac = train_fraction if train_fraction is not None else DEFAULT_TRAIN_FRACTION
-            n_use = max(1, int(frac * len(self.image_files)))
-            self.image_files = self.image_files[:n_use]
-        elif self.settings["mode"] == "val" and train_fraction is not None:
-            n_use = max(1, int(train_fraction * len(self.image_files)))
-            self.image_files = self.image_files[:n_use]
+            n_total = len(self.image_files)
+            n_keep = max(1, int(frac * n_total))
+            if n_keep < n_total:
+                chosen = np.random.choice(n_total, size=n_keep, replace=False)
+                self.used_indices = np.random.permutation(chosen).tolist()
+                logger.info(
+                    f"Subsampled to {len(self.used_indices)} / {n_total} samples (train_fraction={frac})."
+                )
+        else:
+            # SEQNUM-based balanced sampling: always full coverage of all perturbations.
+            # train_fraction controls stamps per SEQNUM (at least 1 per SEQNUM).
+            frac = train_fraction if train_fraction is not None else DEFAULT_TRAIN_FRACTION
+            # Store SEQNUM cache outside the data directory so it is never read as data.
+            _cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "tarts", "seqnum")
+            os.makedirs(_cache_dir, exist_ok=True)
+            _path_hash = hashlib.sha256(os.path.abspath(self.image_dir).encode()).hexdigest()[:16]
+            cache_path = os.path.join(_cache_dir, f"{_path_hash}.pkl")
+            seqnum_per_index: Optional[List[int]] = None
+            if os.path.exists(cache_path):
+                try:
+                    with open(cache_path, "rb") as f:
+                        cache = pickle.load(f)
+                    path_to_seqnum = cache.get("path_to_seqnum")
+                    if path_to_seqnum is not None and set(path_to_seqnum.keys()) == set(self.image_files):
+                        seqnum_per_index = [path_to_seqnum[fp] for fp in self.image_files]
+                        logger.info(
+                            f"Loaded SEQNUM cache from {cache_path} ({len(seqnum_per_index)} entries)."
+                        )
+                    elif cache.get("image_files") == self.image_files:
+                        # Legacy format: same order required
+                        seqnum_per_index = cache.get("seqnum_per_index")
+                        if seqnum_per_index is not None:
+                            logger.info(
+                                f"Loaded SEQNUM cache from {cache_path} ({len(seqnum_per_index)} entries)."
+                            )
+                except (pickle.PickleError, OSError) as e:
+                    logger.warning(f"Could not load SEQNUM cache: {e}")
+            if seqnum_per_index is None:
+                seqnum_per_index = []
+                for i, fp in enumerate(tqdm(self.image_files, desc="Building SEQNUM index")):
+                    try:
+                        data = np.load(fp, allow_pickle=True)
+                        try:
+                            seqnum = int(data["SEQNUM"].item()) if "SEQNUM" in data else -1
+                        finally:
+                            if hasattr(data, "close"):
+                                data.close()
+                    except (KeyError, ValueError, OSError) as e:
+                        logger.warning(f"Failed to load SEQNUM from {fp}: {e}")
+                        seqnum = -1
+                    seqnum_per_index.append(seqnum)
+                try:
+                    path_to_seqnum = {fp: seqnum_per_index[i] for i, fp in enumerate(self.image_files)}
+                    with open(cache_path, "wb") as f:
+                        pickle.dump({"path_to_seqnum": path_to_seqnum}, f)
+                    logger.info(f"Saved SEQNUM cache to {cache_path}.")
+                except OSError as e:
+                    logger.warning(f"Could not save SEQNUM cache: {e}")
+            seqnum_to_indices: Dict[int, List[int]] = {}
+            for i, seqnum in enumerate(seqnum_per_index):
+                seqnum_to_indices.setdefault(seqnum, []).append(i)
+            num_unique = len(seqnum_to_indices) - (1 if -1 in seqnum_to_indices else 0)
+            logger.info(f"Found {num_unique} unique SEQNUMs in dataset.")
+            selected: List[Tuple[int, int]] = []  # (file_index, seqnum)
+            for seqnum, indices in seqnum_to_indices.items():
+                n_take = max(1, min(len(indices), int(frac * len(indices))))
+                chosen = np.random.choice(len(indices), size=n_take, replace=False)
+                for j in chosen:
+                    selected.append((indices[int(j)], seqnum))
+            np.random.shuffle(selected)
+            self.used_indices = [s[0] for s in selected]
+            selected_seqnums = np.array([s[1] for s in selected])
+            if len(self.used_indices) < num_unique:
+                logger.warning(
+                    f"Selected {len(self.used_indices)} samples < {num_unique} unique SEQNUMs; "
+                    "some perturbation bins may be unrepresented."
+                )
+            # Optional: plot SEQNUM distribution to verify uniform coverage
+            if plot_seqnum_hist and self.settings["mode"] == "train":
+                _plot_seqnum_histogram(
+                    selected_seqnums,
+                    plot_seqnum_hist if isinstance(plot_seqnum_hist, str) else "seqnum_histogram.png",
+                )
 
         if noll_zk is None:
             noll_zk = DEFAULT_NOLL_ZK
@@ -383,7 +515,7 @@ class Donuts_Fullframe(Dataset):
 
     def __len__(self) -> int:
         """Return length of this Dataset."""
-        return len(self.image_files)
+        return len(self.used_indices)
 
     def sample_coral(self) -> Dict[str, Any]:
         """Sample a coral image randomly."""
@@ -408,10 +540,13 @@ class Donuts_Fullframe(Dataset):
                 if img_file in corrupted_files:
                     continue
 
-                # Load coral file - use context manager to ensure file is closed
-                with np.load(img_file, allow_pickle=True) as loaded_state:
-                    # Copy arrays to ensure they persist after context manager exits
+                # Load coral file (avoid 'with' for NumPy 2.x / dict return)
+                loaded_state = np.load(img_file, allow_pickle=True)
+                try:
                     state = {key: loaded_state[key].copy() for key in loaded_state.keys()}
+                finally:
+                    if hasattr(loaded_state, "close"):
+                        loaded_state.close()
                 break  # Successfully loaded, exit retry loop
             except (EOFError, IOError, OSError) as e:
                 # File is corrupted, truncated, or missing - delete it
@@ -518,11 +653,12 @@ class Donuts_Fullframe(Dataset):
                 obsID: the observation ID
                 objID: the object ID
         """
-        # get the image file
-        img_file = self.image_files[idx]
+        # get the image file (use index mapping for SEQNUM-balanced sampling)
+        img_file = self.image_files[self.used_indices[idx]]
 
-        # Use context manager to ensure file is properly closed
-        with np.load(img_file, allow_pickle=True) as state:
+        # Load npz; avoid 'with' so we support np.load returning dict (e.g. NumPy 2.x / .npy)
+        state = np.load(img_file, allow_pickle=True)
+        try:
             # get the donut locations
             fx, fy = (
                 torch.tensor(state["field_x"]) * np.pi / 180,
@@ -579,6 +715,9 @@ class Donuts_Fullframe(Dataset):
             band_tensor = torch.tensor(state["band"]).int()
             band = band_tensor.item()
             img = torch.tensor(state["image_aligned"])
+        finally:
+            if hasattr(state, "close"):
+                state.close()
 
         # standardize all the inputs for the neural net
         if self.settings["transform"]:
@@ -713,11 +852,12 @@ class zernikeDataset(Dataset):
         data_dir="/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator/",
         alpha=1e-3,
         rotate=False,
+        rotation_direction: str | None = None,
         return_true=False,
         coral_mode=False,
         coral_filepath="/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/aggregator_real/",
     ):
-        """Initialize the zernikeDataset.
+        r"""Initialize the zernikeDataset.
 
         Parameters
         ----------
@@ -733,6 +873,10 @@ class zernikeDataset(Dataset):
             Whether to return the true Zernike coefficients or estimated coefficients.
         rotate : bool, optional, default=False
             Whether to use rotated Zernikes in the camera frame when available.
+        rotation_direction : {"pos", "neg"}, optional
+            When rotate=True, selects which camera-frame Zernikes to use:
+            - \"pos\" → zk_true_camera_pos (positive RTP rotation)
+            - \"neg\" → zk_true_camera_neg (negative RTP rotation)
         coral_mode : bool, optional, default=False
             Whether to enable coral mode for real data sampling.
         coral_filepath : str, optional
@@ -780,6 +924,13 @@ class zernikeDataset(Dataset):
         # This avoids CUDA reinitialization issues with num_workers > 0
         self.device = torch.device("cpu")
         self.rotate = rotate
+        # Enforce explicit rotation direction when using rotated Zernikes
+        if self.rotate and rotation_direction not in ("pos", "neg"):
+            raise ValueError(
+                f"rotation_direction must be 'pos' or 'neg' when rotate=True "
+                f"(got {rotation_direction!r})."
+            )
+        self.rotation_direction = rotation_direction
 
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""
@@ -960,14 +1111,28 @@ class zernikeDataset(Dataset):
                 "header": json.loads(str(npz_data["header_json"])),
             }
             # Add conditional fields if they exist
-            # If rotate is enabled, prefer zk_true_camera, otherwise use zk_true
-            if self.rotate and "zk_true_camera" in npz_data:
-                loaded_data["zk_true"] = torch.from_numpy(npz_data["zk_true_camera"])
-            elif "zk_true" in npz_data:
-                loaded_data["zk_true"] = torch.from_numpy(npz_data["zk_true"])
-            elif self.rotate:
-                # If rotate is True but zk_true_camera doesn't exist, raise error
-                raise KeyError("'zk_true_camera' not found in npz file when rotate=True")
+            # When rotate=True, use camera-frame Zernikes; enforce that the correct
+            # explicit positive/negative field is present for a hard guarantee.
+            if self.rotate:
+                if self.rotation_direction == "neg":
+                    if "zk_true_camera_neg" not in npz_data:
+                        raise KeyError(
+                            "Expected 'zk_true_camera_neg' in npz file when "
+                            "rotate=True and rotation_direction='neg'."
+                        )
+                    loaded_data["zk_true"] = torch.from_numpy(npz_data["zk_true_camera_neg"])
+                elif self.rotation_direction == "pos":
+                    if "zk_true_camera_pos" not in npz_data:
+                        raise KeyError(
+                            "Expected 'zk_true_camera_pos' in npz file when "
+                            "rotate=True and rotation_direction='pos'."
+                        )
+                    loaded_data["zk_true"] = torch.from_numpy(npz_data["zk_true_camera_pos"])
+            else:
+                if "zk_true" in npz_data:
+                    loaded_data["zk_true"] = torch.from_numpy(npz_data["zk_true"])
+                else:
+                    raise KeyError("'zk_true' not found in npz file when rotate=False")
         except (IOError, OSError, RuntimeError, KeyError) as e:
             logger.error(
                 f"Error loading file {self.filename[idx] if idx < len(self.filename) else 'unknown'}: {e}"
