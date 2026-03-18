@@ -1108,7 +1108,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         with torch.no_grad():
             pred = self.forward(image_tensor, field_x, field_y, focal_val, band_val)
         elapsed_s = time.perf_counter() - start_t
-        print(f"NAOS.deploy_run: output computed in {elapsed_s:.3f}s")
+        logger.info(f"NAOS.deploy_run: output computed in {elapsed_s:.3f}s")
         return pred
 
     def deploy_run_shifts(self, exposure, detectorName=None, shift_amount=5):
