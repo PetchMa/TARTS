@@ -172,8 +172,19 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         if ood_model_path is not None and os.path.exists(ood_model_path):
             logger.info(f"Loading OOD detection model from {ood_model_path}...")
             with warnings.catch_warnings():
+                # Suppress sklearn's "unpickle estimator from different version" warning.
+                # This warning can appear when `ood_model.joblib` was created by an older
+                # sklearn version (e.g. LedoitWolf) and is being unpickled at runtime.
+                #
+                # We suppress by category (if available) and also by message text as a fallback
+                # to make this robust across sklearn versions / import-path changes.
                 if _SklearnInconsistentVersionWarning is not None:
                     warnings.simplefilter("ignore", _SklearnInconsistentVersionWarning)
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Trying to unpickle estimator.*",
+                    category=Warning,
+                )
                 ood_data = joblib.load(ood_model_path)
             self.ood_mean = torch.tensor(ood_data["mean"], device=self.device_val, dtype=torch.float32)
             if ood_data.get("precision") is not None:
