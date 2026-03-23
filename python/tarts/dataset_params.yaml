@@ -15,9 +15,9 @@ butler_repo_path: 'butler_training_fix'
 
 # Model architecture parameters
 cnn_model: 'mobilenetv4_conv_small'  # Options: mobilenetv4_conv_small, mobilenetv4_conv_medium, mobilenetv4_conv_large, mobilenetv4_hybrid_large, resnet18, resnet34, resnet50
-finetune_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain'
-finetune_filepath_train: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain/train/'
-finetune_filepath_val: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain/val/'
+finetune_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain_42'
+finetune_filepath_train: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain_42/train/'
+finetune_filepath_val: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/simulation_pretrain_42/val/'
 coral_filepath: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/coral/'
 coral_filepath_train: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/coral/train/'
 coral_filepath_val: '/media/peterma/mnt2/peterma/research/LSST_FULL_FRAME/coral/val/'
