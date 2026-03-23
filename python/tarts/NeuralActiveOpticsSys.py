@@ -5,10 +5,12 @@ import copy
 import logging
 import os
 import time
+import warnings
 from typing import Any, Dict, List
 
 # Third-party imports
 import joblib
+import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F_loss
@@ -36,6 +38,11 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+try:
+    from sklearn.exceptions import InconsistentVersionWarning as _SklearnInconsistentVersionWarning
+except ImportError:
+    _SklearnInconsistentVersionWarning = None
 
 
 class NeuralActiveOpticsSys(pl.LightningModule):
@@ -124,6 +131,8 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         ood_model_path : str, optional
             Path to OOD detection model (joblib file). If provided, OOD detection will be performed
             during inference and scores will be stored in internal metadata. Defaults to None.
+            Prefer artifacts saved with a ``precision`` array (see ``training/fit_OOD_model.py``) so
+            inference does not unpickle sklearn estimators across version mismatches.
         kmin : float, optional
             Minimum frequency magnitude for frequency filtering. If None, frequency filtering is disabled.
             If set, applies frequency filter to each cropped image before passing to WaveNet.
@@ -159,12 +168,30 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         # Load OOD detection model if path is provided
         self.ood_model = None
         self.ood_mean = None
+        self.ood_precision: torch.Tensor | None = None
         if ood_model_path is not None and os.path.exists(ood_model_path):
             logger.info(f"Loading OOD detection model from {ood_model_path}...")
-            ood_data = joblib.load(ood_model_path)
-            self.ood_model = ood_data["cov_model"]
+            with warnings.catch_warnings():
+                if _SklearnInconsistentVersionWarning is not None:
+                    warnings.simplefilter("ignore", _SklearnInconsistentVersionWarning)
+                ood_data = joblib.load(ood_model_path)
             self.ood_mean = torch.tensor(ood_data["mean"], device=self.device_val, dtype=torch.float32)
-            logger.info("OOD detection model loaded successfully")
+            if ood_data.get("precision") is not None:
+                self.ood_precision = torch.as_tensor(
+                    ood_data["precision"], dtype=torch.float32, device=self.device_val
+                )
+                logger.info("OOD detector: using saved precision matrix (sklearn-free inference).")
+            elif ood_data.get("cov_model") is not None:
+                self.ood_model = ood_data["cov_model"]
+                logger.warning(
+                    "OOD artifact uses legacy pickled sklearn estimator; re-run training/fit_OOD_model.py "
+                    "to save a precision-based artifact and avoid sklearn version warnings."
+                )
+            else:
+                self.ood_mean = None
+                logger.warning("OOD file has no 'precision' or 'cov_model'; OOD detection disabled.")
+            if self.ood_mean is not None:
+                logger.info("OOD detection model loaded successfully")
         elif ood_model_path is not None:
             logger.warning(f"OOD model path provided but file not found: {ood_model_path}")
             logger.info("Continuing without OOD detection...")
@@ -470,6 +497,24 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         return torch.stack(filtered_images, dim=0)
 
+    def _compute_ood_mahalanobis(self, features_np: np.ndarray) -> torch.Tensor:
+        """Mahalanobis distance of rows of ``features_np`` from the OOD training mean.
+
+        Uses a stored precision matrix when available (no sklearn at inference). Legacy artifacts
+        fall back to ``sklearn`` ``LedoitWolf.mahalanobis``.
+        """
+        if self.ood_mean is None:
+            raise RuntimeError("OOD mean is not loaded; cannot compute Mahalanobis distance.")
+        centered = np.ascontiguousarray(features_np - self.ood_mean.cpu().numpy(), dtype=np.float32)
+        if self.ood_precision is not None:
+            fc = torch.from_numpy(centered).to(device=self.device_val, dtype=torch.float32)
+            d2 = torch.einsum("bi,ij,bj->b", fc, self.ood_precision, fc)
+            return torch.sqrt(torch.clamp(d2, min=0.0))
+        if self.ood_model is None:
+            raise RuntimeError("OOD model is not loaded; cannot compute Mahalanobis distance.")
+        mahalanobis_dist = self.ood_model.mahalanobis(centered)
+        return torch.as_tensor(mahalanobis_dist, device=self.device_val, dtype=torch.float32)
+
     def identity(self, x):
         """Return the input unchanged (identity function).
 
@@ -713,17 +758,14 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         # Compute OOD scores if OOD model is available
         ood_scores = None
-        if self.ood_model is not None and self.wavenet_model.wavenet.predictor_features is not None:
-            # Get predictor penultimate features and detach/convert to CPU for numpy
-            penultimate = self.wavenet_model.wavenet.predictor_features  # Shape: (batch_size, n_features)
-
-            # Detach from computation graph and move to CPU for numpy conversion
+        if (
+            self.ood_mean is not None
+            and (self.ood_precision is not None or self.ood_model is not None)
+            and self.wavenet_model.wavenet.predictor_features is not None
+        ):
+            penultimate = self.wavenet_model.wavenet.predictor_features
             features_np = penultimate.detach().cpu().numpy()
-            if self.ood_mean is not None:
-                features_centered = features_np - self.ood_mean.cpu().numpy()
-                mahalanobis_dist = self.ood_model.mahalanobis(features_centered)
-                # Store as tensor
-                ood_scores = torch.tensor(mahalanobis_dist, device=self.device_val, dtype=torch.float32)
+            ood_scores = self._compute_ood_mahalanobis(features_np)
 
         # Ensure all tensors are on the same device before concatenation
         device = total_zernikes.device
@@ -881,18 +923,14 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         # Compute OOD scores if OOD model is available
         ood_scores = None
-        if self.ood_model is not None and self.wavenet_model.wavenet.predictor_features is not None:
-            # Get predictor penultimate features and detach/convert to CPU for numpy
-            penultimate = self.wavenet_model.wavenet.predictor_features  # Shape: (batch_size, n_features)
-
-            # Detach from computation graph and move to CPU for numpy conversion
+        if (
+            self.ood_mean is not None
+            and (self.ood_precision is not None or self.ood_model is not None)
+            and self.wavenet_model.wavenet.predictor_features is not None
+        ):
+            penultimate = self.wavenet_model.wavenet.predictor_features
             features_np = penultimate.detach().cpu().numpy()
-            if self.ood_mean is not None:
-                features_centered = features_np - self.ood_mean.cpu().numpy()
-                mahalanobis_dist = self.ood_model.mahalanobis(features_centered)
-
-                # Store as tensor
-                ood_scores = torch.tensor(mahalanobis_dist, device=self.device_val, dtype=torch.float32)
+            ood_scores = self._compute_ood_mahalanobis(features_np)
 
         # Ensure all tensors are on the same device before concatenation
         device = total_zernikes.device
