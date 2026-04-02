@@ -6,6 +6,7 @@ import logging
 import os
 import time
 import warnings
+from pathlib import Path
 from typing import Any, Dict, List
 
 # Third-party imports
@@ -266,6 +267,24 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         self.alpha = params["alpha"]
         self.SCALE = params["adjustment_AlignNet"]
         self.num_zernikes = len(params["noll_zk"])
+
+        # LSSTCam deployment: Z4/focus correction from branch_prediction_by_band_detector
+        # (see focus_offset.yaml).
+        focus_offset_path = Path(__file__).resolve().parent / "focus_offset.yaml"
+        self._lsstcam_focus_offset_table: Dict[str, Dict[str, float]] | None = None
+        if focus_offset_path.is_file():
+            try:
+                with open(focus_offset_path, "r") as f:
+                    focus_data = yaml.safe_load(f)
+                z4_cfg = focus_data.get("z4_peak_pattern") or {}
+                tbl = z4_cfg.get("branch_prediction_by_band_detector")
+                if isinstance(tbl, dict) and tbl:
+                    self._lsstcam_focus_offset_table = tbl
+                    logger.info("Loaded LSSTCam focus offset table from %s", focus_offset_path)
+            except (OSError, yaml.YAMLError, TypeError, ValueError) as e:
+                logger.warning("Could not load focus offset config from %s: %s", focus_offset_path, e)
+        else:
+            logger.debug("Focus offset file not found at %s", focus_offset_path)
 
         # Apply torch.compile to submodels if requested
         if compile_models:
@@ -1066,6 +1085,52 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             },
         }
 
+    @staticmethod
+    def _filter_str_to_band_letter(filter_str: str) -> str | None:
+        """Map FILTER keyword string to a single band letter (u–y), same heuristics as deploy_run."""
+        if "u" in filter_str:
+            return "u"
+        if "g" in filter_str:
+            return "g"
+        if "r" in filter_str:
+            return "r"
+        if "i" in filter_str:
+            return "i"
+        if "z" in filter_str:
+            return "z"
+        if "y" in filter_str:
+            return "y"
+        return None
+
+    def _apply_lsstcam_focus_offset_if_applicable(
+        self,
+        pred: torch.Tensor,
+        metadata,
+        detector_id: int | str,
+        band_letter: str | None,
+    ) -> torch.Tensor:
+        """If INSTRUME matches LSSTCam (case-insensitive), add focus_offset.yaml correction to index 0."""
+        if self._lsstcam_focus_offset_table is None or band_letter is None:
+            return pred
+        try:
+            instrume = metadata["INSTRUME"]
+        except (KeyError, TypeError):
+            return pred
+        instrume_str = (instrume if isinstance(instrume, str) else str(instrume)).strip()
+        if instrume_str.casefold() != "lsstcam":
+            return pred
+        by_det = self._lsstcam_focus_offset_table.get(band_letter)
+        if not by_det:
+            return pred
+        det_key = str(int(detector_id)) if isinstance(detector_id, (int, float)) else str(detector_id)
+        offset = by_det.get(det_key)
+        if offset is None:
+            return pred
+        out = pred.clone()
+        off = torch.tensor(float(offset), device=out.device, dtype=out.dtype)
+        out[..., 0] = out[..., 0] + off
+        return out
+
     def deploy_run(self, exposure, detectorName=None):
         """Run inference on a real LSST exposure for deployment.
 
@@ -1105,6 +1170,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         image = new.getImage().array
         header = exposure.metadata
         filter_name = header["FILTER"]
+        band_letter = self._filter_str_to_band_letter(filter_name)
         if detectorName is None:
             full_detectorName = header["RAFTBAY"] + "_" + header["CCDSLOT"]
             detectorName = MAP_DETECTOR_TO_NUMBER[full_detectorName]
@@ -1156,6 +1222,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         image_tensor = F.to_tensor(image)[None, ...]
         with torch.no_grad():
             pred = self.forward(image_tensor, field_x, field_y, focal_val, band_val)
+        pred = self._apply_lsstcam_focus_offset_if_applicable(pred, header, detectorName, band_letter)
         elapsed_s = time.perf_counter() - start_t
         logger.info(f"NAOS.deploy_run: output computed in {elapsed_s:.3f}s")
         return pred
@@ -1197,6 +1264,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         image = new.getImage().array
         header = exposure.metadata
         filter_name = header["FILTER"]
+        band_letter = self._filter_str_to_band_letter(filter_name)
         if detectorName is None:
             detectorName = header["CHIPID"]
         #  U G R I Z Y
@@ -1247,7 +1315,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         image_tensor = F.to_tensor(image)[None, ...]
         with torch.no_grad():
             pred = self.forward_shifts(image_tensor, field_x, field_y, focal_val, band_val, shift_amount)
-        return pred
+        return self._apply_lsstcam_focus_offset_if_applicable(pred, header, detectorName, band_letter)
 
     def deploy_detect(self, exposure, detectorName=None):
         """Run inference on a real LSST exposure for deployment.
