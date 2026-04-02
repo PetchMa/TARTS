@@ -1126,6 +1126,14 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         offset = by_det.get(det_key)
         if offset is None:
             return pred
+        logger.info(
+            "INSTRUME=%r is LSSTCam (not LSSTCamSim); applying internal intrinsics "
+            "focus offset to aggregated Zernike index 0: band=%s detector=%s delta=%s",
+            instrume_str,
+            band_letter,
+            det_key,
+            offset,
+        )
         out = pred.clone()
         off = torch.tensor(float(offset), device=out.device, dtype=out.dtype)
         out[..., 0] = out[..., 0] + off
