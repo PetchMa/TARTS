@@ -287,9 +287,19 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 else Path(__file__).resolve().parent / "intrinsics_corners.parquet"
             )
             if _ip.is_file():
-                self.intrinsics_corners = IntrinsicsCornersTables.from_parquet(
-                    _ip, noll_indices=params["noll_zk"]
-                )
+                loaded_tables = IntrinsicsCornersTables.from_parquet(_ip, noll_indices=params["noll_zk"])
+                self.intrinsics_corners = loaded_tables
+                if loaded_tables is not None and loaded_tables.loaded:
+                    logger.info(
+                        "NeuralActiveOpticsSys: LSSTCam intrinsics parquet loaded from %s "
+                        "(per-donut correction on deploy when INSTRUME is LSSTCam).",
+                        _ip,
+                    )
+                else:
+                    logger.warning(
+                        "NeuralActiveOpticsSys: intrinsics file exists but did not load usable tables: %s",
+                        _ip,
+                    )
             elif intrinsics_parquet_path:
                 logger.warning("LSSTCam intrinsics parquet not found: %s", _ip)
         else:
@@ -627,6 +637,15 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             )
             return total_zernikes
         delta_t = torch.as_tensor(delta, device=total_zernikes.device, dtype=total_zernikes.dtype)
+        n_donuts = int(total_zernikes.shape[0])
+        logger.info(
+            "LSSTCam intrinsics: applying nearest-neighbor Zernike correction to %d donut(s), "
+            "detector=%s band=%s (%d modes, micrometers, added to WaveNet output).",
+            n_donuts,
+            int(detector_id),
+            band_letter,
+            delta.shape[1],
+        )
         return total_zernikes + delta_t
 
     def single_conv_batched(self, data):
