@@ -606,7 +606,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         detector_id: int | None,
         apply_lsstcam_intrinsics: bool,
     ) -> torch.Tensor:
-        """Add nearest-neighbor corner intrinsics (microns) to per-donut WaveNet output.
+        """Apply nearest-neighbor corner intrinsics (microns) to per-donut WaveNet output.
 
         Table ``x``, ``y`` are field angles in degrees, matching ``fx``/``fy`` here. Intrinsics
         are stored in **micrometers** in the parquet file; WaveNet output after ``/1000`` is
@@ -640,13 +640,13 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         n_donuts = int(total_zernikes.shape[0])
         logger.info(
             "LSSTCam intrinsics: applying nearest-neighbor Zernike correction to %d donut(s), "
-            "detector=%s band=%s (%d modes, micrometers, added to WaveNet output).",
+            "detector=%s band=%s (%d modes, micrometers, subtracted from WaveNet output).",
             n_donuts,
             int(detector_id),
             band_letter,
             delta.shape[1],
         )
-        return total_zernikes + delta_t
+        return total_zernikes - delta_t
 
     def single_conv_batched(self, data):
         """Apply single convolution operation to batched data using vectorized mapping.
@@ -806,7 +806,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             LSST detector number for intrinsics lookup. Required when
             ``apply_lsstcam_intrinsics`` is True.
         apply_lsstcam_intrinsics : bool, optional
-            If True, add parquet corner intrinsics (real LSSTCam only in normal use). Defaults to
+            If True, subtract parquet corner intrinsics (real LSSTCam only in normal use). Defaults to
             False so training/inference on simulations is unchanged.
 
         Returns
@@ -990,7 +990,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             LSST detector number for intrinsics lookup. Required when
             ``apply_lsstcam_intrinsics`` is True.
         apply_lsstcam_intrinsics : bool, optional
-            If True, add parquet corner intrinsics (real LSSTCam only in normal use). Defaults to
+            If True, subtract parquet corner intrinsics (real LSSTCam only in normal use). Defaults to
             False so training/inference on simulations is unchanged.
 
         Returns
@@ -1299,7 +1299,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         3. Extracts metadata (filter, focal plane position)
         4. Computes field coordinates for all detected donuts
         5. Runs forward pass to predict Zernike coefficients
-        6. For real LSSTCam (``INSTRUME``), adds field-angle intrinsics from parquet to per-donut Zernikes
+        6. For real LSSTCam (``INSTRUME``), subtracts field-angle intrinsics from parquet from per-donut Zernikes
         """
         start_t = time.perf_counter()
         camera = LsstCam().getCamera()
