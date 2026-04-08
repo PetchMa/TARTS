@@ -176,6 +176,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         self.total_zernikes: torch.Tensor | None = None
         self.cropped_image: torch.Tensor | None = None
         self.ood_scores: torch.Tensor | None = None
+        self.zk_intrinsics_CCS: torch.Tensor | None = None
 
         # Load OOD detection model if path is provided
         self.ood_model = None
@@ -422,6 +423,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         - SNR: Signal-to-noise ratio
         - centers: Center coordinates
         - zernikes: Estimated Zernike coefficients
+        - zk_intrinsics_CCS: Intrinsics correction vector (delta_t) in CCS convention
         - ood_score: Out-of-distribution score (if OOD detection is enabled)
 
         Returns:
@@ -448,6 +450,14 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                     "centers": self.centers[i].clone().detach(),
                     "zernikes": self.total_zernikes[i].clone().detach(),
                 }
+                if self.zk_intrinsics_CCS is not None and i < len(self.zk_intrinsics_CCS):
+                    data_dict["zk_intrinsics_CCS"] = self.zk_intrinsics_CCS[i].clone().detach()
+                else:
+                    data_dict["zk_intrinsics_CCS"] = (
+                        torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
+                        .clone()
+                        .detach()
+                    )
                 # Add OOD score if available
                 if self.ood_scores is not None and i < len(self.ood_scores):
                     data_dict["ood_score"] = self.ood_scores[i].clone().detach()
@@ -468,6 +478,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 "SNR": torch.tensor(0).clone().detach(),
                 "centers": torch.tensor([0, 0]).clone().detach(),
                 "zernikes": torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
+                .clone()
+                .detach(),
+                "zk_intrinsics_CCS": torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
                 .clone()
                 .detach(),
                 "ood_score": torch.tensor([float("nan")]).clone().detach(),
@@ -618,12 +631,15 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             or not self.intrinsics_corners.loaded
             or detector_id is None
         ):
+            self.zk_intrinsics_CCS = torch.zeros_like(total_zernikes)
             return total_zernikes
         if total_zernikes.shape[0] == 0:
+            self.zk_intrinsics_CCS = torch.zeros_like(total_zernikes)
             return total_zernikes
         b0 = int(band.reshape(-1)[0].item())
         if b0 < 0 or b0 > 5:
             logger.warning("Invalid band index %s for LSSTCam intrinsics lookup", b0)
+            self.zk_intrinsics_CCS = torch.zeros_like(total_zernikes)
             return total_zernikes
         band_letter = "ugrizy"[b0]
         fx_np = fx.detach().float().cpu().numpy().reshape(-1)
@@ -635,8 +651,10 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 delta.shape[1],
                 total_zernikes.shape[1],
             )
+            self.zk_intrinsics_CCS = torch.zeros_like(total_zernikes)
             return total_zernikes
         delta_t = torch.as_tensor(delta, device=total_zernikes.device, dtype=total_zernikes.dtype)
+        self.zk_intrinsics_CCS = delta_t
         n_donuts = int(total_zernikes.shape[0])
         logger.info(
             "LSSTCam intrinsics: applying nearest-neighbor Zernike correction to %d donut(s), "
@@ -864,6 +882,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             self.total_zernikes = torch.zeros((1, self.num_zernikes), device=self.device_val)
             self.cropped_image = torch.zeros((1, self.CROP_SIZE, self.CROP_SIZE), device=self.device_val)
             self.total_zernikes = torch.zeros((1, self.num_zernikes), device=self.device_val)
+            self.zk_intrinsics_CCS = torch.zeros((1, self.num_zernikes), device=self.device_val)
             self.ood_scores = torch.tensor([float("nan")], device=self.device_val)
             return torch.zeros((1, self.num_zernikes), device=self.device_val)
 
