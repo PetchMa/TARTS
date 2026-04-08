@@ -422,8 +422,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         - band: Band information
         - SNR: Signal-to-noise ratio
         - centers: Center coordinates
-        - zernikes: Estimated Zernike coefficients
+        - zk_deviations_CCS: Estimated Zernike deviations (intrinsics-subtracted)
         - zk_intrinsics_CCS: Intrinsics correction vector (delta_t) in CCS convention
+        - zernikes: Reconstructed total = zk_deviations_CCS + zk_intrinsics_CCS
         - ood_score: Out-of-distribution score (if OOD detection is enabled)
 
         Returns:
@@ -440,6 +441,16 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
             # Ensure these are not None before indexing
             for i in range(num_donuts):
+                if self.zk_intrinsics_CCS is not None and i < len(self.zk_intrinsics_CCS):
+                    zk_intrinsics = self.zk_intrinsics_CCS[i].clone().detach()
+                else:
+                    zk_intrinsics = (
+                        torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
+                        .clone()
+                        .detach()
+                    )
+
+                zk_deviations = self.total_zernikes[i].clone().detach()
                 data_dict = {
                     "cropped_image": self.cropped_image[i].clone().detach(),
                     "fx": self.fx[i].clone().detach(),
@@ -448,16 +459,10 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                     "band": self.band[i].clone().detach(),
                     "SNR": self.SNR[i].clone().detach(),
                     "centers": self.centers[i].clone().detach(),
-                    "zernikes": self.total_zernikes[i].clone().detach(),
+                    "zk_deviations_CCS": zk_deviations,
+                    "zk_intrinsics_CCS": zk_intrinsics,
+                    "zernikes": zk_deviations + zk_intrinsics,
                 }
-                if self.zk_intrinsics_CCS is not None and i < len(self.zk_intrinsics_CCS):
-                    data_dict["zk_intrinsics_CCS"] = self.zk_intrinsics_CCS[i].clone().detach()
-                else:
-                    data_dict["zk_intrinsics_CCS"] = (
-                        torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
-                        .clone()
-                        .detach()
-                    )
                 # Add OOD score if available
                 if self.ood_scores is not None and i < len(self.ood_scores):
                     data_dict["ood_score"] = self.ood_scores[i].clone().detach()
@@ -477,10 +482,13 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 "band": torch.tensor(0).clone().detach(),
                 "SNR": torch.tensor(0).clone().detach(),
                 "centers": torch.tensor([0, 0]).clone().detach(),
-                "zernikes": torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
+                "zk_deviations_CCS": torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
                 .clone()
                 .detach(),
                 "zk_intrinsics_CCS": torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
+                .clone()
+                .detach(),
+                "zernikes": torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
                 .clone()
                 .detach(),
                 "ood_score": torch.tensor([float("nan")]).clone().detach(),
