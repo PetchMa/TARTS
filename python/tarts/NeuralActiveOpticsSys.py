@@ -95,7 +95,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         lr=1e-3,
         final_layer=None,
         aggregator_on=True,
-        pretrained=True,
+        pretrained=False,
         compile_models=False,
         ood_model_path=None,
         kmin=None,
@@ -124,8 +124,10 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             Whether to use aggregator network for final prediction. Defaults to True.
         pretrained : bool, optional
             Whether to use pre-trained CNN weights when creating new models (when checkpoint paths are None).
-            Set to False for deployment mode to avoid downloading weights. Defaults to True.
-            Note: This parameter is ignored when loading from checkpoint files.
+            Defaults to False so Summit/USDF/RA starts do not contact the Hugging Face Hub or require a
+            writable ImageNet-weight cache. Set True only when you intend to download backbone weights
+            (requires network and a writable ``HF_HOME`` / default cache). Ignored when loading from
+            checkpoint files (checkpoints carry full weights).
         compile_models : bool, optional
             Whether to apply torch.compile to the submodels (WaveNet, AlignNet, AggregatorNet).
             This can significantly speed up inference but may increase compilation time on first run.
@@ -224,8 +226,16 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         with open(dataset_params, "r") as yaml_file:
             params = yaml.safe_load(yaml_file)
 
+        cnn_model = params.get("cnn_model", "resnet34")
+        if (wavenet_path is None or alignet_path is None) and pretrained:
+            logger.warning(
+                "NeuralActiveOpticsSys: building WaveNet/AlignNet without checkpoint(s) and with "
+                "pretrained=True will download backbone weights (timm/Hugging Face Hub) and write "
+                "under HF_HOME or HOME. For production use checkpoint paths and leave pretrained=False."
+            )
+
         if wavenet_path is None:
-            self.wavenet_model = WaveNetSystem(pretrained=pretrained).to(self.device_val)
+            self.wavenet_model = WaveNetSystem(cnn_model=cnn_model, pretrained=pretrained).to(self.device_val)
         else:
             # Always use checkpoint loading - the pretrained parameter doesn't matter
             # when loading from checkpoint
@@ -234,7 +244,9 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             ).to(self.device_val)
 
         if alignet_path is None:
-            self.alignnet_model = AlignNetSystem(pretrained=pretrained).to(self.device_val)
+            self.alignnet_model = AlignNetSystem(cnn_model=cnn_model, pretrained=pretrained).to(
+                self.device_val
+            )
         else:
             # Always use checkpoint loading - the pretrained parameter doesn't matter
             # when loading from checkpoint
@@ -966,18 +978,17 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         embedded_features = embedded_features[None, ...]
 
-        # Match training data mean computation:
-        # Training data: zk_mean1 = torch.mean(zk_pred1, dim=0) / 1000
-        # Since total_zernikes is already divided by 1000, we don't divide again
-        mean_zernike = torch.mean(total_zernikes, dim=0)
-        self.mean_zernike = mean_zernike
+        # Use robust median reduction across crop-level predictions.
+        # Since total_zernikes is already divided by 1000, we don't divide again.
+        median_zernike = torch.median(total_zernikes, dim=0).values
+        self.mean_zernike = median_zernike
         # (OPTIONAL) Check the types
         if self.aggregator_on:
             # Match training data: mean_zernike should NOT have convert_zernikes_deploy applied
             # Training data stores mean directly without conversion
-            final_zernike_prediction = self.aggregatornet_model((embedded_features, mean_zernike))
+            final_zernike_prediction = self.aggregatornet_model((embedded_features, median_zernike))
         else:
-            final_zernike_prediction = mean_zernike
+            final_zernike_prediction = median_zernike
         final_zernike_prediction = self.final_layer(final_zernike_prediction)
 
         return final_zernike_prediction
@@ -1134,18 +1145,17 @@ class NeuralActiveOpticsSys(pl.LightningModule):
 
         embedded_features = embedded_features[None, ...]
 
-        # Match training data mean computation:
-        # Training data: zk_mean1 = torch.mean(zk_pred1, dim=0) / 1000
-        # Since total_zernikes is already divided by 1000, we don't divide again
-        mean_zernike = torch.mean(total_zernikes, dim=0)
+        # Use robust median reduction across crop-level predictions.
+        # Since total_zernikes is already divided by 1000, we don't divide again.
+        median_zernike = torch.median(total_zernikes, dim=0).values
 
         # (OPTIONAL) Check the types
         if self.aggregator_on:
             # Match training data: mean_zernike should NOT have convert_zernikes_deploy applied
             # Training data stores mean directly without conversion
-            final_zernike_prediction = self.aggregatornet_model((embedded_features, mean_zernike))
+            final_zernike_prediction = self.aggregatornet_model((embedded_features, median_zernike))
         else:
-            final_zernike_prediction = mean_zernike
+            final_zernike_prediction = median_zernike
         final_zernike_prediction = self.final_layer(final_zernike_prediction)
 
         return final_zernike_prediction
@@ -1326,7 +1336,8 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         3. Extracts metadata (filter, focal plane position)
         4. Computes field coordinates for all detected donuts
         5. Runs forward pass to predict Zernike coefficients
-        6. For real LSSTCam (``INSTRUME``), subtracts field-angle intrinsics from parquet from per-donut Zernikes
+        6. For real LSSTCam (``INSTRUME``), subtracts field-angle intrinsics from parquet from per-donut
+           Zernikes
         """
         start_t = time.perf_counter()
         camera = LsstCam().getCamera()
