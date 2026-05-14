@@ -1,5 +1,8 @@
 """Neural network to predict donut placement coefficients from donut images and positions."""
 
+# Configure Hugging Face cache (``HF_HOME`` / ``TARTS_HF_HOME``) before timm pulls huggingface_hub.
+from . import _runtime_env  # noqa: F401
+
 # Third-party imports
 import timm
 import torch
@@ -45,7 +48,7 @@ class AlignNet(nn.Module):
         freeze_cnn: bool = False,
         n_predictor_layers: tuple = (256,),
         device="cuda",
-        pretrained: bool = True,
+        pretrained: bool = False,
     ) -> None:
         """Initialize the NeuralAlignment model.
 
@@ -63,8 +66,8 @@ class AlignNet(nn.Module):
             The output layer is fixed to have 2 nodes.
         device : str, optional, default='cuda'
             The device to use for computations ('cuda' or 'cpu').
-        pretrained : bool, optional, default=True
-            Whether to use pre-trained CNN weights. Set to False to avoid downloading weights.
+        pretrained : bool, optional, default=False
+            Whether to use pre-trained CNN weights. Set to True only when downloads are acceptable.
 
         Notes
         -----

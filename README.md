@@ -75,12 +75,24 @@ noll_zk = params['noll_zk']
 
 ## Minimal usage (NeuralActiveOpticsSys)
 
+Production and RA-style runs should pass **checkpoint paths** so WaveNet and AlignNet weights come from disk only (no Hugging Face Hub or internet):
+
 ```python
 from tarts.NeuralActiveOpticsSys import NeuralActiveOpticsSys
 
-model = NeuralActiveOpticsSys(dataset_params='TARTS/python/tarts/dataset_params.yaml')
-# Use forward/forward_align/forward_shifts, or deploy_run for LSST exposures
+model = NeuralActiveOpticsSys(
+    dataset_params="TARTS/python/tarts/dataset_params.yaml",
+    wavenet_path="/path/to/wavenet.ckpt",
+    alignet_path="/path/to/alignnet.ckpt",
+    aggregatornet_path="/path/to/aggregator.ckpt",  # optional if aggregator_on=False
+)
 ```
+
+For local experiments without checkpoints, `NeuralActiveOpticsSys` defaults `pretrained=False` so timm/torchvision **does not** download ImageNet backbones at import time. Set `pretrained=True` only when you want those downloads (needs network and a writable Hugging Face cache).
+
+### Hugging Face cache / offline hosts
+
+Backbone downloads (when `pretrained=True`) use the Hugging Face Hub cache. Set **`HF_HOME`** to a writable directory (or **`TARTS_HF_HOME`**, which sets `HF_HOME` if it is not already set) **before** `import tarts` if `HOME` is not writable or points at a non-existent path. For air-gapped use, pre-populate that cache (or bake it into the image) and set **`HF_HUB_OFFLINE=1`**.
 
 ## Notes
 
