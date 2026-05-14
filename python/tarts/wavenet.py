@@ -1,5 +1,8 @@
 """Neural network to predict zernike coefficients from donut images and positions."""
 
+# Configure Hugging Face cache (``HF_HOME`` / ``TARTS_HF_HOME``) before timm pulls huggingface_hub.
+from . import _runtime_env  # noqa: F401
+
 # Third-party imports
 import timm
 import torch
@@ -20,7 +23,7 @@ class WaveNet(nn.Module):
         n_predictor_layers: tuple = (256,),
         n_zernikes: int = 25,
         device="cuda",
-        pretrained: bool = True,
+        pretrained: bool = False,
     ) -> None:
         """Create the WaveNet.
 
@@ -39,8 +42,8 @@ class WaveNet(nn.Module):
             Number of Zernike coefficients to predict.
         device: str, default='cuda'
             Device to run the model on ('cuda' or 'cpu').
-        pretrained: bool, default=True
-            Whether to use pre-trained CNN weights. Set to False to avoid downloading weights.
+        pretrained: bool, default=False
+            Whether to use pre-trained CNN weights. Set to True only when downloads are acceptable.
         """
         super().__init__()
         # Check CUDA availability and convert device string to torch.device
