@@ -28,7 +28,6 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 # Local/application imports
 from .aggregatornet import AggregatorNet
 from .constants import MAP_DETECTOR_TO_NUMBER
-from .intrinsics_corners import IntrinsicsCornersTables
 from .lightning_alignnet import AlignNetSystem
 from .lightning_wavenet import WaveNetSystem
 from .utils import (
@@ -101,8 +100,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         kmin=None,
         kmax=float("inf"),
         sigma_frac=0.1,
-        enable_lsstcam_intrinsics: bool = False,
-        intrinsics_parquet_path: str | None = None,
     ) -> None:
         """Initialize the Neural Active Optics System.
 
@@ -149,14 +146,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         sigma_frac : float, optional
             Fractional Gaussian width for smooth filter edges in frequency filtering.
             Only used if kmin is not None. Defaults to 0.1.
-        enable_lsstcam_intrinsics : bool, optional
-            If True, load ``intrinsics_corners.parquet`` when present (or the path below)
-            for opt-in LSSTCam field-angle intrinsics (Z4-Z28, microns). Pipeline
-            deployments should leave this False and use Butler-provided
-            ``intrinsicZernikes`` through ts_wep instead.
-        intrinsics_parquet_path : str, optional
-            Path to parquet intrinsics table. If None, uses ``tarts/intrinsics_corners.parquet``
-            next to this package when that file exists.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -178,7 +167,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         self.total_zernikes: torch.Tensor | None = None
         self.cropped_image: torch.Tensor | None = None
         self.ood_scores: torch.Tensor | None = None
-        self.zk_intrinsics_CCS: torch.Tensor | None = None
 
         # Load OOD detection model if path is provided
         self.ood_model = None
@@ -291,32 +279,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         self.alpha = params["alpha"]
         self.SCALE = params["adjustment_AlignNet"]
         self.num_zernikes = len(params["noll_zk"])
-
-        self.intrinsics_corners: IntrinsicsCornersTables | None = None
-        if enable_lsstcam_intrinsics:
-            _ip = (
-                Path(intrinsics_parquet_path)
-                if intrinsics_parquet_path
-                else Path(__file__).resolve().parent / "intrinsics_corners.parquet"
-            )
-            if _ip.is_file():
-                loaded_tables = IntrinsicsCornersTables.from_parquet(_ip, noll_indices=params["noll_zk"])
-                self.intrinsics_corners = loaded_tables
-                if loaded_tables is not None and loaded_tables.loaded:
-                    logger.info(
-                        "NeuralActiveOpticsSys: opt-in LSSTCam intrinsics parquet loaded from %s "
-                        "(per-donut correction on deploy when explicitly enabled).",
-                        _ip,
-                    )
-                else:
-                    logger.warning(
-                        "NeuralActiveOpticsSys: intrinsics file exists but did not load usable tables: %s",
-                        _ip,
-                    )
-            elif intrinsics_parquet_path:
-                logger.warning("LSSTCam intrinsics parquet not found: %s", _ip)
-        else:
-            logger.debug("LSSTCam intrinsics tables disabled (enable_lsstcam_intrinsics=False)")
 
         # LSSTCam deployment: Z4/focus correction from branch_prediction_by_band_detector
         # (see focus_offset.yaml).
@@ -434,9 +396,8 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         - band: Band information
         - SNR: Signal-to-noise ratio
         - centers: Center coordinates
-        - zk_deviations_CCS: Estimated Zernike deviations (intrinsics-subtracted)
-        - zk_intrinsics_CCS: Intrinsics correction vector (delta_t) in CCS convention
-        - zernikes: Reconstructed total = zk_deviations_CCS + zk_intrinsics_CCS
+        - zk_deviations_CCS: Legacy alias for the estimated Zernike coefficients
+        - zernikes: Estimated Zernike coefficients in CCS convention
         - ood_score: Out-of-distribution score (if OOD detection is enabled)
 
         Returns:
@@ -451,18 +412,8 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         if len(self.fx) > 0 and self.cropped_image is not None and self.total_zernikes is not None:
             num_donuts = len(self.fx)
 
-            # Ensure these are not None before indexing
             for i in range(num_donuts):
-                if self.zk_intrinsics_CCS is not None and i < len(self.zk_intrinsics_CCS):
-                    zk_intrinsics = self.zk_intrinsics_CCS[i].clone().detach()
-                else:
-                    zk_intrinsics = (
-                        torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
-                        .clone()
-                        .detach()
-                    )
-
-                zk_deviations = self.total_zernikes[i].clone().detach()
+                zernikes = self.total_zernikes[i].clone().detach()
                 data_dict = {
                     "cropped_image": self.cropped_image[i].clone().detach(),
                     "fx": self.fx[i].clone().detach(),
@@ -471,9 +422,8 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                     "band": self.band[i].clone().detach(),
                     "SNR": self.SNR[i].clone().detach(),
                     "centers": self.centers[i].clone().detach(),
-                    "zk_deviations_CCS": zk_deviations,
-                    "zk_intrinsics_CCS": zk_intrinsics,
-                    "zernikes": zk_deviations + zk_intrinsics,
+                    "zk_deviations_CCS": zernikes,
+                    "zernikes": zernikes,
                 }
                 # Add OOD score if available
                 if self.ood_scores is not None and i < len(self.ood_scores):
@@ -495,9 +445,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 "SNR": torch.tensor(0).clone().detach(),
                 "centers": torch.tensor([0, 0]).clone().detach(),
                 "zk_deviations_CCS": torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
-                .clone()
-                .detach(),
-                "zk_intrinsics_CCS": torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
                 .clone()
                 .detach(),
                 "zernikes": torch.full((self.num_zernikes,), float("nan"), device=self.device_val)
@@ -629,62 +576,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             The same input tensor unchanged.
         """
         return x
-
-    def _maybe_add_lsstcam_intrinsics(
-        self,
-        total_zernikes: torch.Tensor,
-        fx: torch.Tensor,
-        fy: torch.Tensor,
-        band: torch.Tensor,
-        detector_id: int | None,
-        apply_lsstcam_intrinsics: bool,
-    ) -> torch.Tensor:
-        """Apply nearest-neighbor corner intrinsics (microns) to per-donut WaveNet output.
-
-        Table ``x``, ``y`` are field angles in degrees, matching ``fx``/``fy`` here. Intrinsics
-        are stored in **micrometers** in the parquet file; WaveNet output after ``/1000`` is
-        treated as microns (see ``lightning_wavenet`` / ``ZERNIKE_SCALE_FACTOR``).
-        """
-        if (
-            not apply_lsstcam_intrinsics
-            or self.intrinsics_corners is None
-            or not self.intrinsics_corners.loaded
-            or detector_id is None
-        ):
-            self.zk_intrinsics_CCS = torch.zeros_like(total_zernikes)
-            return total_zernikes
-        if total_zernikes.shape[0] == 0:
-            self.zk_intrinsics_CCS = torch.zeros_like(total_zernikes)
-            return total_zernikes
-        b0 = int(band.reshape(-1)[0].item())
-        if b0 < 0 or b0 > 5:
-            logger.warning("Invalid band index %s for LSSTCam intrinsics lookup", b0)
-            self.zk_intrinsics_CCS = torch.zeros_like(total_zernikes)
-            return total_zernikes
-        band_letter = "ugrizy"[b0]
-        fx_np = fx.detach().float().cpu().numpy().reshape(-1)
-        fy_np = fy.detach().float().cpu().numpy().reshape(-1)
-        delta = self.intrinsics_corners.lookup_microns_batch(band_letter, int(detector_id), fx_np, fy_np)
-        if delta.shape[1] != total_zernikes.shape[1]:
-            logger.error(
-                "LSSTCam intrinsics mode count %s != model Zernike dim %s",
-                delta.shape[1],
-                total_zernikes.shape[1],
-            )
-            self.zk_intrinsics_CCS = torch.zeros_like(total_zernikes)
-            return total_zernikes
-        delta_t = torch.as_tensor(delta, device=total_zernikes.device, dtype=total_zernikes.dtype)
-        self.zk_intrinsics_CCS = delta_t
-        n_donuts = int(total_zernikes.shape[0])
-        logger.info(
-            "LSSTCam intrinsics: applying nearest-neighbor Zernike correction to %d donut(s), "
-            "detector=%s band=%s (%d modes, micrometers, subtracted from WaveNet output).",
-            n_donuts,
-            int(detector_id),
-            band_letter,
-            delta.shape[1],
-        )
-        return total_zernikes - delta_t
 
     def single_conv_batched(self, data):
         """Apply single convolution operation to batched data using vectorized mapping.
@@ -822,9 +713,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         fy: torch.Tensor,
         intra: torch.Tensor,
         band: torch.Tensor,
-        *,
-        detector_id: int | None = None,
-        apply_lsstcam_intrinsics: bool = False,
     ) -> torch.Tensor:
         """Forward pass of the Neural Active Optics System.
 
@@ -840,12 +728,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             Intra/extra-focal indicator tensor (0 for intra, 1 for extra).
         band : torch.Tensor
             Filter band tensor (0-5 for u,g,r,i,z,y filters).
-        detector_id : int, optional
-            LSST detector number for intrinsics lookup. Required when
-            ``apply_lsstcam_intrinsics`` is True.
-        apply_lsstcam_intrinsics : bool, optional
-            If True, subtract parquet corner intrinsics (real LSSTCam only in normal use). Defaults to
-            False so training/inference on simulations is unchanged.
 
         Returns
         -------
@@ -902,7 +784,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             self.total_zernikes = torch.zeros((1, self.num_zernikes), device=self.device_val)
             self.cropped_image = torch.zeros((1, self.CROP_SIZE, self.CROP_SIZE), device=self.device_val)
             self.total_zernikes = torch.zeros((1, self.num_zernikes), device=self.device_val)
-            self.zk_intrinsics_CCS = torch.zeros((1, self.num_zernikes), device=self.device_val)
             self.ood_scores = torch.tensor([float("nan")], device=self.device_val)
             return torch.zeros((1, self.num_zernikes), device=self.device_val)
 
@@ -921,9 +802,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             filtered_cropped_image, fx.clone(), fy.clone(), intra.clone(), band.clone()
         )
         total_zernikes = total_zernikes / 1000
-        total_zernikes = self._maybe_add_lsstcam_intrinsics(
-            total_zernikes, fx, fy, band, detector_id, apply_lsstcam_intrinsics
-        )
 
         # Compute OOD scores if OOD model is available
         ood_scores = None
@@ -1001,9 +879,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         intra: torch.Tensor,
         band: torch.Tensor,
         shift_amount: int = 5,
-        *,
-        detector_id: int | None = None,
-        apply_lsstcam_intrinsics: bool = False,
     ) -> torch.Tensor:
         """Forward pass with random image shifts applied before WaveNet.
 
@@ -1024,12 +899,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             Filter band tensor (0-5 for u,g,r,i,z,y filters).
         shift_amount : int, default=5
             Maximum amount of random shift to apply to cropped images.
-        detector_id : int, optional
-            LSST detector number for intrinsics lookup. Required when
-            ``apply_lsstcam_intrinsics`` is True.
-        apply_lsstcam_intrinsics : bool, optional
-            If True, subtract parquet corner intrinsics (real LSSTCam only in normal use). Defaults to
-            False so training/inference on simulations is unchanged.
 
         Returns
         -------
@@ -1097,9 +966,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             filtered_shifted_cropped_image, fx.clone(), fy.clone(), intra.clone(), band.clone()
         )
         total_zernikes = total_zernikes / 1000
-        total_zernikes = self._maybe_add_lsstcam_intrinsics(
-            total_zernikes, fx, fy, band, detector_id, apply_lsstcam_intrinsics
-        )
 
         # Compute OOD scores if OOD model is available
         ood_scores = None
@@ -1235,19 +1101,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         }
 
     @staticmethod
-    def _detector_int_for_intrinsics(header, detector_name) -> int | None:
-        """Numeric detector id for intrinsics parquet keys (same convention as ``MAP_DETECTOR_TO_NUMBER``)."""
-        try:
-            return int(detector_name)
-        except (TypeError, ValueError):
-            pass
-        try:
-            full = header["RAFTBAY"] + "_" + header["CCDSLOT"]
-            return int(MAP_DETECTOR_TO_NUMBER[full])
-        except Exception:
-            return None
-
-    @staticmethod
     def _filter_str_to_band_letter(filter_str: str) -> str | None:
         """Map FILTER keyword string to a single band letter (u–y), same heuristics as deploy_run."""
         if "u" in filter_str:
@@ -1302,17 +1155,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         out[..., 0] = out[..., 0] + off
         return out
 
-    def _use_lsstcam_intrinsics_on_deploy(self, metadata) -> bool:
-        """True when opt-in parquet intrinsics are loaded for a real LSSTCam exposure."""
-        if self.intrinsics_corners is None or not self.intrinsics_corners.loaded:
-            return False
-        try:
-            instrume = metadata["INSTRUME"]
-        except (KeyError, TypeError):
-            return False
-        s = (instrume if isinstance(instrume, str) else str(instrume)).strip()
-        return s.casefold() == "lsstcam"
-
     def deploy_run(self, exposure, detectorName=None):
         """Run inference on a real LSST exposure for deployment.
 
@@ -1335,7 +1177,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         2. Subtracts background
         3. Extracts metadata (filter, focal plane position)
         4. Computes field coordinates for all detected donuts
-        6. If explicitly enabled for real LSSTCam, subtracts field-angle intrinsics from parquet
         """
         start_t = time.perf_counter()
         camera = LsstCam().getCamera()
@@ -1402,8 +1243,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         band_val = filter_name.expand(centers.shape[0], 1).to(self.device_val)[None, ...]
 
         image_tensor = F.to_tensor(image)[None, ...]
-        det_int = self._detector_int_for_intrinsics(header, detectorName)
-        apply_intr = det_int is not None and self._use_lsstcam_intrinsics_on_deploy(header)
         with torch.no_grad():
             pred = self.forward(
                 image_tensor,
@@ -1411,8 +1250,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 field_y,
                 focal_val,
                 band_val,
-                detector_id=det_int,
-                apply_lsstcam_intrinsics=apply_intr,
             )
         pred = self._apply_lsstcam_focus_offset_if_applicable(pred, header, detectorName, band_letter)
         elapsed_s = time.perf_counter() - start_t
@@ -1447,7 +1284,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         3. Extracts metadata (filter, focal plane position)
         4. Computes field coordinates for all detected donuts
         5. Runs forward_shifts pass to predict Zernike coefficients with random shifts
-        6. Same opt-in LSSTCam intrinsics behavior as ``deploy_run`` when metadata and tables allow
         """
         camera = LsstCam().getCamera()
         assembleCcdTask = AssembleCcdTask()
@@ -1506,8 +1342,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         band_val = filter_name.expand(centers.shape[0], 1).to(self.device_val)[None, ...]
 
         image_tensor = F.to_tensor(image)[None, ...]
-        det_int = self._detector_int_for_intrinsics(header, detectorName)
-        apply_intr = det_int is not None and self._use_lsstcam_intrinsics_on_deploy(header)
         with torch.no_grad():
             pred = self.forward_shifts(
                 image_tensor,
@@ -1516,8 +1350,6 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 focal_val,
                 band_val,
                 shift_amount,
-                detector_id=det_int,
-                apply_lsstcam_intrinsics=apply_intr,
             )
         return self._apply_lsstcam_focus_offset_if_applicable(pred, header, detectorName, band_letter)
 
