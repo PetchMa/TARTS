@@ -101,7 +101,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         kmin=None,
         kmax=float("inf"),
         sigma_frac=0.1,
-        enable_lsstcam_intrinsics: bool = True,
+        enable_lsstcam_intrinsics: bool = False,
         intrinsics_parquet_path: str | None = None,
     ) -> None:
         """Initialize the Neural Active Optics System.
@@ -150,10 +150,10 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             Fractional Gaussian width for smooth filter edges in frequency filtering.
             Only used if kmin is not None. Defaults to 0.1.
         enable_lsstcam_intrinsics : bool, optional
-            If True (default), load ``intrinsics_corners.parquet`` when present (or the path below)
-            for LSSTCam field-angle intrinsics (Z4–Z28, microns). Applied only when
-            ``apply_lsstcam_intrinsics=True`` and ``detector_id`` are passed (e.g. ``deploy_run`` on
-            real LSSTCam exposures). Training calls typically leave this off.
+            If True, load ``intrinsics_corners.parquet`` when present (or the path below)
+            for opt-in LSSTCam field-angle intrinsics (Z4-Z28, microns). Pipeline
+            deployments should leave this False and use Butler-provided
+            ``intrinsicZernikes`` through ts_wep instead.
         intrinsics_parquet_path : str, optional
             Path to parquet intrinsics table. If None, uses ``tarts/intrinsics_corners.parquet``
             next to this package when that file exists.
@@ -304,8 +304,8 @@ class NeuralActiveOpticsSys(pl.LightningModule):
                 self.intrinsics_corners = loaded_tables
                 if loaded_tables is not None and loaded_tables.loaded:
                     logger.info(
-                        "NeuralActiveOpticsSys: LSSTCam intrinsics parquet loaded from %s "
-                        "(per-donut correction on deploy when INSTRUME is LSSTCam).",
+                        "NeuralActiveOpticsSys: opt-in LSSTCam intrinsics parquet loaded from %s "
+                        "(per-donut correction on deploy when explicitly enabled).",
                         _ip,
                     )
                 else:
@@ -1303,7 +1303,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         return out
 
     def _use_lsstcam_intrinsics_on_deploy(self, metadata) -> bool:
-        """True when intrinsics parquet is loaded and exposure is real LSSTCam (not e.g. LSSTCamSim)."""
+        """True when opt-in parquet intrinsics are loaded for a real LSSTCam exposure."""
         if self.intrinsics_corners is None or not self.intrinsics_corners.loaded:
             return False
         try:
@@ -1335,9 +1335,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         2. Subtracts background
         3. Extracts metadata (filter, focal plane position)
         4. Computes field coordinates for all detected donuts
-        5. Runs forward pass to predict Zernike coefficients
-        6. For real LSSTCam (``INSTRUME``), subtracts field-angle intrinsics from parquet from per-donut
-           Zernikes
+        6. If explicitly enabled for real LSSTCam, subtracts field-angle intrinsics from parquet
         """
         start_t = time.perf_counter()
         camera = LsstCam().getCamera()
@@ -1449,7 +1447,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
         3. Extracts metadata (filter, focal plane position)
         4. Computes field coordinates for all detected donuts
         5. Runs forward_shifts pass to predict Zernike coefficients with random shifts
-        6. Same LSSTCam intrinsics behavior as ``deploy_run`` when metadata and tables allow
+        6. Same opt-in LSSTCam intrinsics behavior as ``deploy_run`` when metadata and tables allow
         """
         camera = LsstCam().getCamera()
         assembleCcdTask = AssembleCcdTask()
