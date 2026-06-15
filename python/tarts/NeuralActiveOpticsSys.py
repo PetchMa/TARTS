@@ -1185,8 +1185,7 @@ class NeuralActiveOpticsSys(pl.LightningModule):
             new = assembleCcdTask.assembleCcd(exposure)
             SubtractBackground = subtractBackground.SubtractBackgroundTask()
             SubtractBackground.run(new)
-        except (AttributeError, RuntimeError, ValueError, LengthError) as e:
-            logger.warning(f"Switching to no CCD assembly: {e}")
+        except (AttributeError, RuntimeError, ValueError, LengthError):
             new = exposure
             SubtractBackground = subtractBackground.SubtractBackgroundTask()
             SubtractBackground.run(new)
