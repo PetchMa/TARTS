@@ -9,7 +9,7 @@ refinements: 1
 CROP_SIZE : 160
 deg_per_pix : 0.00005555555
 mm_pix : 0.01
-alpha: 0.25
+alpha: 0.5
 max_seq_len: 200
 butler_repo_path: 'butler_training_fix'
 
