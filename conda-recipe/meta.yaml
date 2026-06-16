@@ -1,5 +1,5 @@
 {% set name = "tarts" %}
-{% set version = "4.1" %}
+{% set version = "4.2" %}
 {% set python_min = "3.10" %}
 
 package:
