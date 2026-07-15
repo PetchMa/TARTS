@@ -10,7 +10,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="tarts",
-    version="4.2",
+    version="4.3",
     packages=find_packages(),
     install_requires=[],
     author="Peter Xiangyuan Ma",
